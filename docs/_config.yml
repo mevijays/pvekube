@@ -1,0 +1,35 @@
+title: PVEKube
+description: Single-binary Kubernetes cluster manager for Proxmox via Cluster API
+baseurl: /golang-proxmox-clusterctl-k8s
+url: https://ionos-cloud.github.io
+repository: ionos-cloud/golang-proxmox-clusterctl-k8s
+
+theme: jekyll-theme-minimal
+plugins:
+  - jekyll-seo-tag
+  - jekyll-feed
+
+# Site navigation
+navigation:
+  - title: Home
+    url: /
+  - title: Getting Started
+    url: /installation/
+  - title: Architecture
+    url: /architecture/
+  - title: Features
+    url: /features/
+  - title: API Reference
+    url: /api-reference/
+  - title: Troubleshooting
+    url: /troubleshooting/
+  - title: GitHub
+    url: https://github.com/ionos-cloud/golang-proxmox-clusterctl-k8s
+
+exclude:
+  - .gitignore
+  - .github
+  - Gemfile
+  - Gemfile.lock
+  - vendor/
+  - node_modules/
