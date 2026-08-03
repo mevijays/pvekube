@@ -1,0 +1,24 @@
+{{define "cluster_preview"}}
+<div class="space-y-3">
+  {{if .Error}}
+  <div class="flex items-start gap-2 rounded-lg border border-red-900 bg-red-950/50 px-3 py-2 text-sm text-red-300">
+    <i class="fa fa-exclamation-circle mt-0.5"></i><span>{{.Error}}</span>
+  </div>
+  {{else}}
+  <div>
+    <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Manifest preview — {{.ClusterName}}</h3>
+    <pre class="max-h-96 overflow-auto rounded-lg border border-slate-800 bg-black/40 p-3 font-mono text-xs text-slate-300">{{.YAML}}</pre>
+  </div>
+  <form hx-post="/clusters/apply" hx-target="#clusters-panel" hx-swap="outerHTML"
+        hx-confirm="Apply this manifest and start launching real VMs on Proxmox?">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input type="hidden" name="name" value="{{.ClusterName}}">
+    <input type="hidden" name="template_id" value="{{.TemplateID}}">
+    <textarea name="manifest_yaml" class="hidden">{{.YAML}}</textarea>
+    <button type="submit" class="rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700">
+      <i class="fa fa-rocket mr-1.5"></i>Apply — launch this cluster
+    </button>
+  </form>
+  {{end}}
+</div>
+{{end}}

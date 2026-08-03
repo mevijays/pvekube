@@ -1,0 +1,32 @@
+{{define "nav"}}
+<nav class="border-b border-slate-800 bg-slate-900/60">
+  <div class="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
+    <a href="/" class="flex items-center gap-2 text-white">
+      <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600">
+        <i class="fa fa-cubes text-sm text-white"></i>
+      </div>
+      <span class="font-semibold">PVEKube</span>
+    </a>
+    <div class="flex items-center gap-1 text-sm">
+      <a href="/prereqs" class="rounded-md px-3 py-1.5 text-slate-300 hover:bg-slate-800 hover:text-white">
+        <i class="fa fa-list-alt mr-1.5"></i>Prerequisites
+      </a>
+      <a href="/proxmox" class="rounded-md px-3 py-1.5 text-slate-300 hover:bg-slate-800 hover:text-white">
+        <i class="fa fa-server mr-1.5"></i>Proxmox
+      </a>
+      <a href="/templates" class="rounded-md px-3 py-1.5 text-slate-300 hover:bg-slate-800 hover:text-white">
+        <i class="fa fa-hdd-o mr-1.5"></i>Templates
+      </a>
+      <a href="/clusters" class="rounded-md px-3 py-1.5 text-slate-300 hover:bg-slate-800 hover:text-white">
+        <i class="fa fa-sitemap mr-1.5"></i>Clusters
+      </a>
+      <form method="post" action="/logout" class="ml-2">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <button class="rounded-md px-3 py-1.5 text-slate-400 hover:bg-slate-800 hover:text-white" title="Sign out">
+          <i class="fa fa-sign-out"></i>
+        </button>
+      </form>
+    </div>
+  </div>
+</nav>
+{{end}}

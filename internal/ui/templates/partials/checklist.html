@@ -1,0 +1,32 @@
+{{define "checklist"}}
+<div id="checklist" class="space-y-3">
+  {{range .Checks}}
+  <div class="flex items-center justify-between rounded-xl border {{if eq .Status "ok"}}border-emerald-900 bg-emerald-950/20{{else if eq .Status "fail"}}border-red-900 bg-red-950/20{{else if eq .Status "warn"}}border-amber-900 bg-amber-950/20{{else}}border-slate-800 bg-slate-900/40{{end}} px-4 py-3">
+    <div class="flex items-start gap-3">
+      <div class="mt-0.5 flex h-6 w-6 flex-none items-center justify-center rounded-full
+        {{if eq .Status "ok"}}bg-emerald-600{{else if eq .Status "fail"}}bg-red-600{{else if eq .Status "warn"}}bg-amber-600{{else}}bg-slate-700{{end}}">
+        {{if eq .Status "ok"}}<i class="fa fa-check text-xs text-white"></i>
+        {{else if eq .Status "fail"}}<i class="fa fa-times text-xs text-white"></i>
+        {{else if eq .Status "warn"}}<i class="fa fa-exclamation text-xs text-white"></i>
+        {{else}}<i class="fa fa-question text-xs text-white"></i>{{end}}
+      </div>
+      <div>
+        <div class="font-medium text-white">{{.Name}}</div>
+        <div class="text-sm text-slate-400">{{.Detail}}</div>
+      </div>
+    </div>
+    {{if and (ne .Status "ok") .Fixable}}
+    <button hx-post="/prereqs/fix/{{.ID}}" hx-target="#checklist" hx-swap="outerHTML"
+            class="flex-none rounded-lg bg-brand-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-700">
+      Fix it
+    </button>
+    {{end}}
+    {{if and (eq .Status "ok") (eq .ID "kind_cluster")}}
+    <a href="/management/kubeconfig" class="flex-none rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-800">
+      <i class="fa fa-download mr-1.5"></i>kubeconfig
+    </a>
+    {{end}}
+  </div>
+  {{end}}
+</div>
+{{end}}

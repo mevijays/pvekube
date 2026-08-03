@@ -1,0 +1,96 @@
+{{define "templates_panel"}}
+<div id="templates-panel" class="space-y-8">
+  {{if .Error}}
+  <div class="flex items-start gap-2 rounded-lg border border-red-900 bg-red-950/50 px-3 py-2 text-sm text-red-300">
+    <i class="fa fa-exclamation-circle mt-0.5"></i><span>{{.Error}}</span>
+  </div>
+  {{end}}
+
+  {{if .LinuxOK | not}}
+  <div class="flex items-start gap-2 rounded-lg border border-amber-900 bg-amber-950/20 px-3 py-2 text-sm text-amber-200">
+    <i class="fa fa-exclamation-triangle mt-0.5"></i>
+    <span>This host is {{.HostOS}}, not Linux. Validating a config is fine, but a real build will hang — the Proxmox build VM needs to reach this host over HTTP, which requires Docker's <code>--net=host</code> (Linux-only). Run PVEKube on a Linux host to actually build templates.</span>
+  </div>
+  {{end}}
+
+  <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
+    <h2 class="mb-4 text-sm font-semibold uppercase tracking-wide text-slate-400">Build a new template</h2>
+    <form class="space-y-4">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <div class="grid gap-4 sm:grid-cols-2">
+        <div>
+          <label class="mb-1 block text-sm font-medium text-slate-300">Operating system</label>
+          <select name="os_flavor" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500">
+            {{range .Flavors}}<option value="{{.ID}}">{{.Label}}</option>{{end}}
+          </select>
+        </div>
+        <div>
+          <label class="mb-1 block text-sm font-medium text-slate-300">Kubernetes version <span class="text-slate-500">(optional)</span></label>
+          <input type="text" name="k8s_version" placeholder="leave blank for image-builder's default"
+                 class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500">
+        </div>
+        <div>
+          <label class="mb-1 block text-sm font-medium text-slate-300">Node</label>
+          <select name="node" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500">
+            {{range .Snapshot.Nodes}}<option value="{{.Name}}">{{.Name}} ({{.CPUCores}} vCPU, {{.MemTotalMB}} MB)</option>{{end}}
+          </select>
+        </div>
+        <div>
+          <label class="mb-1 block text-sm font-medium text-slate-300">Network bridge</label>
+          <select name="bridge" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500">
+            {{range .Snapshot.Bridges}}<option value="{{.Name}}">{{.Name}} ({{.Node}}){{if .Address}} — {{.Address}}{{end}}</option>{{end}}
+          </select>
+        </div>
+        <div>
+          <label class="mb-1 block text-sm font-medium text-slate-300">ISO storage pool</label>
+          <select name="iso_pool" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500">
+            {{range .Snapshot.Storage}}{{if .SupportsISO}}<option value="{{.ID}}">{{.ID}} ({{.Type}})</option>{{end}}{{end}}
+          </select>
+        </div>
+        <div>
+          <label class="mb-1 block text-sm font-medium text-slate-300">VM image storage pool</label>
+          <select name="storage_pool" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500">
+            {{range .Snapshot.Storage}}{{if .SupportsVM}}<option value="{{.ID}}">{{.ID}} ({{.Type}}, {{.DiskFormat}})</option>{{end}}{{end}}
+          </select>
+        </div>
+      </div>
+
+      <div class="flex gap-3 pt-2">
+        <button type="button" hx-post="/templates/validate" hx-target="#templates-panel" hx-swap="innerHTML" hx-include="closest form"
+                class="rounded-lg border border-slate-700 px-4 py-2.5 text-sm font-semibold text-slate-200 hover:bg-slate-800">
+          <i class="fa fa-check-square-o mr-1.5"></i>Validate only (seconds)
+        </button>
+        <button type="button" hx-post="/templates/build" hx-target="#templates-panel" hx-swap="innerHTML" hx-include="closest form"
+                hx-confirm="This will allocate a VMID and run a real 20-35 minute Packer build on Proxmox. Continue?"
+                class="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-brand-700">
+          <i class="fa fa-cogs mr-1.5"></i>Build template (20-35 min)
+        </button>
+      </div>
+    </form>
+  </div>
+
+  <div>
+    <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Built templates</h2>
+    {{if .Built}}
+    <table class="w-full text-left text-sm">
+      <thead class="text-slate-500">
+        <tr><th class="pb-2 font-normal">OS</th><th class="pb-2 font-normal">Kubernetes</th><th class="pb-2 font-normal">Node</th><th class="pb-2 font-normal">VMID</th><th class="pb-2 font-normal">Built</th></tr>
+      </thead>
+      <tbody>
+        {{range .Built}}
+        <tr class="border-t border-slate-800">
+          <td class="py-2 font-medium text-white">{{.OSFlavor}}</td>
+          <td class="py-2 text-slate-400">{{.K8sVersion}}</td>
+          <td class="py-2 text-slate-400">{{.Node}}</td>
+          <td class="py-2 text-slate-400">{{.VMID}}</td>
+          <td class="py-2 text-slate-400">{{.CreatedAt}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <p class="text-sm text-slate-500">No templates built yet.</p>
+    {{end}}
+  </div>
+</div>
+{{end}}

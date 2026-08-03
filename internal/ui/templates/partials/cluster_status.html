@@ -1,0 +1,103 @@
+{{define "cluster_status"}}
+<div id="cluster-status" class="space-y-6" hx-get="/clusters/{{.ClusterName}}/status" hx-trigger="every 5s" hx-swap="innerHTML">
+  {{if not .Status.Found}}
+  <div class="flex items-center gap-2 rounded-lg border border-amber-900 bg-amber-950/20 px-3 py-2 text-sm text-amber-200">
+    <i class="fa fa-spinner fa-spin"></i> Cluster object not visible yet on the management cluster — this refreshes automatically.
+  </div>
+  {{else}}
+  <div class="flex items-center justify-between rounded-xl border {{if eq .Status.Phase "Provisioned"}}border-emerald-900 bg-emerald-950/20{{else}}border-slate-800 bg-slate-900/40{{end}} px-4 py-3">
+    <div>
+      <div class="font-medium text-white">Phase: {{.Status.Phase}}</div>
+      <div class="mt-1 text-sm text-slate-400">
+        Control plane {{if .Status.ControlPlaneReady}}ready{{else}}not ready{{end}} ·
+        Infrastructure {{if .Status.InfrastructureReady}}ready{{else}}not ready{{end}}
+      </div>
+    </div>
+    {{if .KubeconfigReady}}
+    <a href="/clusters/{{.ClusterName}}/kubeconfig" class="rounded-lg bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-700">
+      <i class="fa fa-download mr-1.5"></i>Download kubeconfig
+    </a>
+    {{end}}
+  </div>
+
+  <div class="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+    <h3 class="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Lifecycle</h3>
+    <div class="flex flex-wrap items-end gap-4">
+      <form hx-post="/clusters/{{.ClusterName}}/scale-workers" hx-target="#cluster-status" hx-swap="outerHTML" class="flex items-end gap-2">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <div>
+          <label class="mb-1 block text-xs text-slate-400">Worker count</label>
+          <input type="number" name="replicas" min="0" value="{{.Status.WorkerReplicas}}" class="w-20 rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-white">
+        </div>
+        <button type="submit" class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800">Scale workers</button>
+      </form>
+
+      <form hx-post="/clusters/{{.ClusterName}}/scale-controlplane" hx-target="#cluster-status" hx-swap="outerHTML" class="flex items-end gap-2">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <div>
+          <label class="mb-1 block text-xs text-slate-400">Control plane count</label>
+          <select name="replicas" class="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-white">
+            <option value="1">1</option>
+            <option value="3">3</option>
+          </select>
+        </div>
+        <button type="submit" class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800">Scale control plane</button>
+      </form>
+
+      <form hx-post="/clusters/{{.ClusterName}}/delete" hx-target="#cluster-status" hx-swap="outerHTML"
+            hx-confirm="Type-to-confirm isn't available in this dialog — this will permanently delete &quot;{{.ClusterName}}&quot; and every VM it owns on Proxmox. Continue?">
+        <input type="hidden" name="csrf" value="{{$.CSRF}}">
+        <button type="submit" class="rounded-lg border border-red-900 px-3 py-1.5 text-sm text-red-300 hover:bg-red-950/40">
+          <i class="fa fa-trash mr-1.5"></i>Delete cluster
+        </button>
+      </form>
+    </div>
+  </div>
+
+  {{if .Status.Conditions}}
+  <div>
+    <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Conditions</h3>
+    <div class="space-y-2">
+      {{range .Status.Conditions}}
+      <div class="flex items-start gap-2 rounded-lg border {{if eq .Status "True"}}border-emerald-900 bg-emerald-950/10{{else}}border-amber-900 bg-amber-950/10{{end}} px-3 py-2 text-sm">
+        <i class="fa {{if eq .Status "True"}}fa-check text-emerald-500{{else}}fa-clock-o text-amber-400{{end}} mt-0.5"></i>
+        <div>
+          <span class="font-medium text-white">{{.Type}}</span>
+          {{if .Reason}}<span class="text-slate-500"> — {{.Reason}}</span>{{end}}
+          {{if .Message}}<div class="text-slate-400">{{.Message}}</div>{{end}}
+        </div>
+      </div>
+      {{end}}
+    </div>
+  </div>
+  {{end}}
+
+  <div>
+    <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Machines</h3>
+    {{if .Status.Machines}}
+    <table class="w-full text-left text-sm">
+      <thead class="text-slate-500">
+        <tr><th class="pb-2 font-normal">Name</th><th class="pb-2 font-normal">Role</th><th class="pb-2 font-normal">Phase</th><th class="pb-2 font-normal">IP</th><th class="pb-2 font-normal">Node</th><th class="pb-2 font-normal">Version</th></tr>
+      </thead>
+      <tbody>
+        {{range .Status.Machines}}
+        <tr class="border-t border-slate-800">
+          <td class="py-2 font-medium text-white">{{.Name}}</td>
+          <td class="py-2 text-slate-400">{{.Role}}</td>
+          <td class="py-2">
+            <span class="rounded px-1.5 py-0.5 text-xs {{if eq .Phase "Running"}}bg-emerald-900 text-emerald-300{{else if eq .Phase "Failed"}}bg-red-900 text-red-300{{else}}bg-slate-800 text-slate-300{{end}}">{{.Phase}}</span>
+          </td>
+          <td class="py-2 text-slate-400">{{if .IP}}{{.IP}}{{else}}—{{end}}</td>
+          <td class="py-2 text-slate-400">{{if .NodeName}}{{.NodeName}}{{else}}—{{end}}</td>
+          <td class="py-2 text-slate-400">{{.K8sVersion}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <p class="text-sm text-slate-500">No machines yet.</p>
+    {{end}}
+  </div>
+  {{end}}
+</div>
+{{end}}

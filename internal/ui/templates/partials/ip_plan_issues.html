@@ -1,0 +1,16 @@
+{{define "ip_plan_issues"}}
+<div class="space-y-2">
+  {{if not .Issues}}
+  <div class="flex items-center gap-2 rounded-lg border border-emerald-900 bg-emerald-950/20 px-3 py-2 text-sm text-emerald-300">
+    <i class="fa fa-check"></i> IP plan looks good.
+  </div>
+  {{else}}
+  {{range .Issues}}
+  <div class="flex items-start gap-2 rounded-lg border {{if eq .Severity "error"}}border-red-900 bg-red-950/20 text-red-300{{else}}border-amber-900 bg-amber-950/20 text-amber-200{{end}} px-3 py-2 text-sm">
+    <i class="fa {{if eq .Severity "error"}}fa-times-circle{{else}}fa-exclamation-triangle{{end}} mt-0.5"></i>
+    <span><strong>{{.Field}}:</strong> {{.Message}}</span>
+  </div>
+  {{end}}
+  {{end}}
+</div>
+{{end}}

@@ -1,0 +1,87 @@
+{{define "proxmox_connected"}}
+<div class="space-y-6">
+  <div class="flex items-center justify-between rounded-xl border border-emerald-900 bg-emerald-950/20 px-4 py-3">
+    <div class="flex items-center gap-3">
+      <div class="flex h-8 w-8 items-center justify-center rounded-full bg-emerald-600">
+        <i class="fa fa-check text-white"></i>
+      </div>
+      <div>
+        <div class="font-medium text-white">Connected to {{.Conn.URL}}</div>
+        <div class="text-sm text-slate-400">Proxmox VE {{.Snapshot.Version}} · token {{.Conn.TokenID}}</div>
+      </div>
+    </div>
+    <div class="flex gap-2">
+      <button hx-post="/proxmox/refresh" hx-target="#proxmox-panel" hx-swap="innerHTML"
+              class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-800">
+        <i class="fa fa-refresh mr-1.5"></i>Refresh
+      </button>
+      <button hx-post="/proxmox/disconnect" hx-target="#proxmox-panel" hx-swap="innerHTML"
+              hx-confirm="Remove this Proxmox connection? Templates and clusters already created won't be deleted."
+              class="rounded-lg border border-red-900 px-3 py-1.5 text-sm text-red-300 hover:bg-red-950/40">
+        Disconnect
+      </button>
+    </div>
+  </div>
+
+  <div>
+    <h2 class="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-400">Permissions</h2>
+    <div class="space-y-2">
+      {{range .Perms}}
+      <div class="flex items-center justify-between rounded-lg border {{if .OK}}border-emerald-900 bg-emerald-950/10{{else}}border-red-900 bg-red-950/10{{end}} px-3 py-2">
+        <div class="flex items-center gap-2 text-sm">
+          <i class="fa {{if .OK}}fa-check text-emerald-500{{else}}fa-times text-red-500{{end}}"></i>
+          <span class="text-white">{{.Name}}</span>
+          <span class="text-slate-500">({{.Privilege}}){{if not .Probed}} — assumed{{end}}</span>
+        </div>
+        {{if not .OK}}<code class="text-xs text-amber-400">{{.FixCommand}}</code>{{end}}
+      </div>
+      {{end}}
+    </div>
+  </div>
+
+  <div class="grid gap-4 sm:grid-cols-2">
+    <div class="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+      <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Nodes</h2>
+      {{range .Snapshot.Nodes}}
+      <div class="mb-2 rounded-lg bg-slate-950/50 p-3 text-sm">
+        <div class="font-medium text-white">{{.Name}} <span class="text-xs text-slate-500">({{.Status}})</span></div>
+        <div class="mt-1 text-slate-400">{{.CPUCores}} vCPU · {{.MemTotalMB}} MB RAM · {{.DiskTotalGB}} GB disk</div>
+      </div>
+      {{else}}<p class="text-sm text-slate-500">No nodes found.</p>{{end}}
+    </div>
+    <div class="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+      <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Network bridges</h2>
+      {{range .Snapshot.Bridges}}
+      <div class="mb-2 rounded-lg bg-slate-950/50 p-3 text-sm">
+        <div class="font-medium text-white">{{.Name}} <span class="text-xs text-slate-500">on {{.Node}}</span></div>
+        <div class="mt-1 text-slate-400">{{if .Address}}{{.Address}}{{else}}no IP{{end}}{{if .VLANAware}} · VLAN-aware{{end}}</div>
+      </div>
+      {{else}}<p class="text-sm text-slate-500">No bridges found — cluster networking will need one.</p>{{end}}
+    </div>
+  </div>
+
+  <div class="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+    <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Storage pools</h2>
+    <table class="w-full text-left text-sm">
+      <thead class="text-slate-500">
+        <tr><th class="pb-2 font-normal">Pool</th><th class="pb-2 font-normal">Type</th><th class="pb-2 font-normal">Content</th><th class="pb-2 font-normal">Disk format</th></tr>
+      </thead>
+      <tbody>
+        {{range .Snapshot.Storage}}
+        <tr class="border-t border-slate-800">
+          <td class="py-2 font-medium text-white">{{.ID}}</td>
+          <td class="py-2 text-slate-400">{{.Type}}</td>
+          <td class="py-2 text-slate-400">
+            {{if .SupportsISO}}<span class="mr-1 rounded bg-slate-800 px-1.5 py-0.5 text-xs">iso</span>{{end}}
+            {{if .SupportsVM}}<span class="rounded bg-slate-800 px-1.5 py-0.5 text-xs">vm images</span>{{end}}
+          </td>
+          <td class="py-2 text-slate-400">{{.DiskFormat}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+
+  <p class="text-xs text-slate-500">Next available VMID: {{.Snapshot.NextVMID}} · discovery cached, refresh to re-scan.</p>
+</div>
+{{end}}

@@ -1,0 +1,46 @@
+{{define "proxmox_form"}}
+<div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
+  {{if .Error}}
+  <div class="mb-4 flex items-start gap-2 rounded-lg border border-red-900 bg-red-950/50 px-3 py-2 text-sm text-red-300">
+    <i class="fa fa-exclamation-circle mt-0.5"></i><span>{{.Error}}</span>
+  </div>
+  {{end}}
+  <form hx-post="/proxmox/connect" hx-target="#proxmox-panel" hx-swap="innerHTML" class="space-y-4">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <div>
+      <label class="mb-1 block text-sm font-medium text-slate-300">Proxmox URL</label>
+      <input type="text" name="url" placeholder="172.16.1.101" required value="{{.URL}}"
+             class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500">
+      <p class="mt-1 text-xs text-slate-500">Host or IP. Port 8006 and https:// are assumed if omitted.</p>
+    </div>
+    <div>
+      <label class="mb-1 block text-sm font-medium text-slate-300">API token ID</label>
+      <input type="text" name="token_id" placeholder="capmox@pve!capi" required value="{{.TokenID}}"
+             class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500">
+    </div>
+    <div>
+      <label class="mb-1 block text-sm font-medium text-slate-300">API token secret</label>
+      <input type="password" name="secret" required
+             class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500">
+      <p class="mt-1 text-xs text-slate-500">Encrypted at rest on this host. Never logged.</p>
+    </div>
+    <label class="flex items-center gap-2 text-sm text-slate-300">
+      <input type="checkbox" name="insecure_tls" value="1" checked class="rounded border-slate-700 bg-slate-950">
+      Accept self-signed certificate
+    </label>
+
+    <details class="rounded-lg border border-slate-800 bg-slate-950/50 px-3 py-2">
+      <summary class="cursor-pointer text-sm text-slate-300">Don't have a token yet? Copy these commands.</summary>
+      <pre class="mt-2 overflow-x-auto rounded-lg bg-black/50 p-3 font-mono text-xs text-slate-300">pveum user add capmox@pve --comment 'PVEKube service account'
+pveum aclmod / -user capmox@pve -role PVEVMAdmin
+pveum aclmod / -user capmox@pve -role PVEAuditor
+pveum user token add capmox@pve capi -privsep 0</pre>
+      <p class="mt-2 text-xs text-slate-500">Run these on the Proxmox host (as root). The last command prints the token secret — copy it, it's shown only once.</p>
+    </details>
+
+    <button type="submit" class="w-full rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-brand-700">
+      Connect
+    </button>
+  </form>
+</div>
+{{end}}

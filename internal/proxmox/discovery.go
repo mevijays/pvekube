@@ -1,0 +1,213 @@
+package proxmox
+
+import (
+	"context"
+	"fmt"
+	"sort"
+)
+
+// Snapshot is everything downstream screens (template builder, cluster
+// designer) need, gathered in one pass and cached so those screens can
+// populate dropdowns from real data instead of free-text fields a user
+// could typo.
+type Snapshot struct {
+	Version  string    `json:"version"`
+	Nodes    []Node    `json:"nodes"`
+	Storage  []Storage `json:"storage"`
+	Bridges  []Bridge  `json:"bridges"`
+	NextVMID int       `json:"next_vmid"`
+}
+
+type Node struct {
+	Name        string  `json:"name"`
+	Status      string  `json:"status"`
+	CPUCores    int     `json:"cpu_cores"`
+	CPUUsedPct  float64 `json:"cpu_used_pct"`
+	MemTotalMB  int64   `json:"mem_total_mb"`
+	MemUsedMB   int64   `json:"mem_used_mb"`
+	DiskTotalGB int64   `json:"disk_total_gb"`
+	DiskUsedGB  int64   `json:"disk_used_gb"`
+}
+
+// Storage describes one storage pool, resolved down to the disk format
+// PVEKube should use with it: ZFS/LVM-backed pools don't support qcow2, so
+// the template builder and cluster designer must pick "raw" automatically
+// rather than making the user guess.
+type Storage struct {
+	ID           string   `json:"id"`
+	Type         string   `json:"type"` // dir, lvmthin, zfspool, nfs, ...
+	ContentTypes []string `json:"content_types"`
+	SupportsISO  bool     `json:"supports_iso"`
+	SupportsVM   bool     `json:"supports_vm"`
+	DiskFormat   string   `json:"disk_format"` // "qcow2" or "raw"
+	Shared       bool     `json:"shared"`
+}
+
+type Bridge struct {
+	Node      string `json:"node"`
+	Name      string `json:"name"`
+	Address   string `json:"address,omitempty"`
+	VLANAware bool   `json:"vlan_aware"`
+}
+
+func (c *Client) Discover(ctx context.Context) (*Snapshot, error) {
+	snap := &Snapshot{}
+
+	version, err := c.Version(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("checking version (is the URL/token correct?): %w", err)
+	}
+	snap.Version = version
+
+	nodes, err := c.nodes(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing nodes (needs Sys.Audit — see permission checklist): %w", err)
+	}
+	snap.Nodes = nodes
+
+	storage, err := c.storage(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing storage (needs Datastore.Audit): %w", err)
+	}
+	snap.Storage = storage
+
+	var bridges []Bridge
+	for _, n := range nodes {
+		bs, err := c.bridges(ctx, n.Name)
+		if err != nil {
+			return nil, fmt.Errorf("listing network on node %s (needs Sys.Audit): %w", n.Name, err)
+		}
+		bridges = append(bridges, bs...)
+	}
+	snap.Bridges = bridges
+
+	nextID, err := c.nextVMID(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("allocating next VMID: %w", err)
+	}
+	snap.NextVMID = nextID
+
+	return snap, nil
+}
+
+func (c *Client) nodes(ctx context.Context) ([]Node, error) {
+	var raw []struct {
+		Node    string  `json:"node"`
+		Status  string  `json:"status"`
+		MaxCPU  int     `json:"maxcpu"`
+		CPU     float64 `json:"cpu"`
+		MaxMem  int64   `json:"maxmem"`
+		Mem     int64   `json:"mem"`
+		MaxDisk int64   `json:"maxdisk"`
+		Disk    int64   `json:"disk"`
+	}
+	if err := c.get(ctx, "/nodes", &raw); err != nil {
+		return nil, err
+	}
+	out := make([]Node, 0, len(raw))
+	for _, n := range raw {
+		out = append(out, Node{
+			Name: n.Node, Status: n.Status, CPUCores: n.MaxCPU, CPUUsedPct: n.CPU * 100,
+			MemTotalMB: n.MaxMem / 1024 / 1024, MemUsedMB: n.Mem / 1024 / 1024,
+			DiskTotalGB: n.MaxDisk / 1024 / 1024 / 1024, DiskUsedGB: n.Disk / 1024 / 1024 / 1024,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+func (c *Client) storage(ctx context.Context) ([]Storage, error) {
+	var raw []struct {
+		Storage string `json:"storage"`
+		Type    string `json:"type"`
+		Content string `json:"content"`
+		Shared  int    `json:"shared"`
+	}
+	if err := c.get(ctx, "/storage", &raw); err != nil {
+		return nil, err
+	}
+	out := make([]Storage, 0, len(raw))
+	for _, s := range raw {
+		contents := splitCSV(s.Content)
+		diskFormat := "qcow2"
+		// Block-based storage backends (LVM-thin, ZFS, Ceph RBD) don't
+		// support qcow2 files — only raw block images. This is one of
+		// the "silent failure at build time" traps called out in PLAN.md.
+		switch s.Type {
+		case "lvmthin", "lvm", "zfspool", "rbd", "iscsi":
+			diskFormat = "raw"
+		}
+		out = append(out, Storage{
+			ID: s.Storage, Type: s.Type, ContentTypes: contents,
+			SupportsISO: containsStr(contents, "iso"),
+			SupportsVM:  containsStr(contents, "images"),
+			DiskFormat:  diskFormat,
+			Shared:      s.Shared == 1,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
+}
+
+func (c *Client) bridges(ctx context.Context, node string) ([]Bridge, error) {
+	var raw []struct {
+		Iface      string `json:"iface"`
+		Type       string `json:"type"`
+		Address    string `json:"address"`
+		BridgeVLAN int    `json:"bridge_vlan_aware"`
+	}
+	if err := c.get(ctx, "/nodes/"+node+"/network", &raw); err != nil {
+		return nil, err
+	}
+	var out []Bridge
+	for _, n := range raw {
+		if n.Type != "bridge" {
+			continue
+		}
+		out = append(out, Bridge{Node: node, Name: n.Iface, Address: n.Address, VLANAware: n.BridgeVLAN == 1})
+	}
+	return out, nil
+}
+
+// NextVMID allocates the next free VMID from Proxmox. Exported so callers
+// (e.g. the template builder) can pre-allocate a deterministic VMID before
+// starting a build, rather than letting Packer pick one implicitly.
+func (c *Client) NextVMID(ctx context.Context) (int, error) {
+	return c.nextVMID(ctx)
+}
+
+func (c *Client) nextVMID(ctx context.Context) (int, error) {
+	// Proxmox returns this as a JSON string ("115"), not a number.
+	var idStr string
+	if err := c.get(ctx, "/cluster/nextid", &idStr); err != nil {
+		return 0, err
+	}
+	var id int
+	if _, err := fmt.Sscanf(idStr, "%d", &id); err != nil {
+		return 0, fmt.Errorf("parsing nextid %q: %w", idStr, err)
+	}
+	return id, nil
+}
+
+func splitCSV(s string) []string {
+	var out []string
+	start := 0
+	for i := 0; i <= len(s); i++ {
+		if i == len(s) || s[i] == ',' {
+			if i > start {
+				out = append(out, s[start:i])
+			}
+			start = i + 1
+		}
+	}
+	return out
+}
+
+func containsStr(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}

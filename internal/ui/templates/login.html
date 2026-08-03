@@ -1,0 +1,36 @@
+{{define "title"}}Sign in · PVEKube{{end}}
+{{define "body"}}
+<div class="flex min-h-full items-center justify-center px-4 py-16">
+  <div class="w-full max-w-sm">
+    <div class="mb-8 text-center">
+      <div class="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-brand-600">
+        <i class="fa fa-cubes text-xl text-white"></i>
+      </div>
+      <h1 class="text-xl font-semibold text-white">PVEKube</h1>
+      <p class="mt-1 text-sm text-slate-400">Kubernetes on Proxmox, from a browser.</p>
+    </div>
+
+    <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-6 shadow-xl">
+      {{if .Error}}
+      <div class="mb-4 flex items-start gap-2 rounded-lg border border-red-900 bg-red-950/50 px-3 py-2 text-sm text-red-300">
+        <i class="fa fa-exclamation-circle mt-0.5"></i>
+        <span>{{.Error}}</span>
+      </div>
+      {{end}}
+      <form method="post" action="/login" class="space-y-4">
+        <input type="hidden" name="csrf" value="{{.CSRF}}">
+        <div>
+          <label class="mb-1 block text-sm font-medium text-slate-300">Admin password</label>
+          <input type="password" name="password" autofocus required
+                 class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white placeholder-slate-500 focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500">
+        </div>
+        <button type="submit"
+                class="w-full rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-brand-700">
+          Sign in
+        </button>
+      </form>
+    </div>
+    <p class="mt-6 text-center text-xs text-slate-500">Data stays on this host. Nothing is sent anywhere else.</p>
+  </div>
+</div>
+{{end}}
