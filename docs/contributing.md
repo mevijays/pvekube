@@ -486,4 +486,4 @@ By contributing, you agree that your contributions will be licensed under the Ap
 
 **Questions?** Open an issue or start a [discussion](https://github.com/mevijays/pvekube/discussions).
 
-**[← Back to Docs](/)** | **[Troubleshooting](troubleshooting/)**
+**[← Back to Docs]({{ '/' | relative_url }})** | **[Troubleshooting]({{ '/troubleshooting/' | relative_url }})**

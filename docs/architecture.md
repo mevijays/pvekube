@@ -394,4 +394,4 @@ PVEKube generates these manifests and applies them via `kubectl apply`. CAPI con
 
 ---
 
-**[← Back to Docs](/)** | **[Next: Features](features/)**
+**[← Back to Docs]({{ '/' | relative_url }})** | **[Next: Features]({{ '/features/' | relative_url }})**

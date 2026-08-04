@@ -41,7 +41,7 @@ mkdir -p ~/pvekube-data
 ### Access
 Open your browser to `http://<vm-ip>:8080/setup`
 
-**[→ Full Getting Started Guide](installation/)**
+**[→ Full Getting Started Guide]({{ '/installation/' | relative_url }})**
 
 ## Architecture
 
@@ -53,7 +53,7 @@ PVEKube bridges the gap between Proxmox and Kubernetes Cluster API (CAPI):
 
 All orchestration happens declaratively through Kubernetes resources — PVEKube is a UI over kubectl + clusterctl.
 
-**[→ Architecture Deep-Dive](architecture/)**
+**[→ Architecture Deep-Dive]({{ '/architecture/' | relative_url }})**
 
 ## What It Does
 
@@ -83,7 +83,7 @@ All orchestration happens declaratively through Kubernetes resources — PVEKube
 - Delete cluster (cascading teardown of VMs)
 - Rolling upgrade via new ProxmoxMachineTemplate + KCP patch
 
-**[→ Full Feature List](features/)**
+**[→ Full Feature List]({{ '/features/' | relative_url }})**
 
 ## Requirements
 
@@ -94,12 +94,14 @@ All orchestration happens declaratively through Kubernetes resources — PVEKube
 
 ## Documentation
 
-- **[Getting Started](installation/)** — Build, deploy, and initial setup
-- **[Architecture](architecture/)** — Design, component roles, data flow
-- **[Features](features/)** — Detailed capability breakdown
-- **[API Reference](api-reference/)** — HTTP endpoints and database schema
-- **[Troubleshooting](troubleshooting/)** — Common issues and solutions
-- **[Contributing](contributing/)** — Development setup and contribution guidelines
+- **[Getting Started]({{ '/installation/' | relative_url }})** — Build, deploy, and initial setup
+- **[Architecture]({{ '/architecture/' | relative_url }})** — Design, component roles, data flow
+- **[Features]({{ '/features/' | relative_url }})** — Detailed capability breakdown
+- **[API Reference]({{ '/api-reference/' | relative_url }})** — HTTP endpoints and database schema
+- **[Troubleshooting]({{ '/troubleshooting/' | relative_url }})** — Common issues and solutions
+- **[Contributing]({{ '/contributing/' | relative_url }})** — Development setup and contribution guidelines
+
+## Known Limitations
 
 - **Upgrade path** not end-to-end tested (needs two templates on real Linux host)
 - **Phase 10 enhancements** (self-managing cluster, CAPI backups, diagnostics) pending
@@ -116,4 +118,4 @@ Apache 2.0
 
 ---
 
-**Ready to get started?** [→ Installation Guide](installation/)
+**Ready to get started?** [→ Installation Guide]({{ '/installation/' | relative_url }})

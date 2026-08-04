@@ -280,10 +280,10 @@ journalctl -u pvekube -f
 
 ## Next Steps
 
-- **[Features Overview](features/)** — What you can do with PVEKube
-- **[Architecture](architecture/)** — How it all fits together
-- **[Troubleshooting](troubleshooting/)** — Common issues and solutions
-- **[API Reference](api-reference/)** — HTTP endpoints and database schema
+- **[Features Overview]({{ '/features/' | relative_url }})** — What you can do with PVEKube
+- **[Architecture]({{ '/architecture/' | relative_url }})** — How it all fits together
+- **[Troubleshooting]({{ '/troubleshooting/' | relative_url }})** — Common issues and solutions
+- **[API Reference]({{ '/api-reference/' | relative_url }})** — HTTP endpoints and database schema
 
 ---
 

@@ -545,4 +545,4 @@ PVEKube currently does not support outbound webhooks. Future versions may suppor
 
 ---
 
-**[← Back to Docs](/)** | **[Next: Troubleshooting](troubleshooting/)**
+**[← Back to Docs]({{ '/' | relative_url }})** | **[Next: Troubleshooting]({{ '/troubleshooting/' | relative_url }})**

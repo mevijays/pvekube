@@ -552,4 +552,4 @@ If you're stuck:
 
 ---
 
-**[← Back to Docs](/)** | **[Contributing](contributing/)**
+**[← Back to Docs]({{ '/' | relative_url }})** | **[Contributing]({{ '/contributing/' | relative_url }})**

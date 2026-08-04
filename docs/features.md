@@ -352,4 +352,4 @@ PVEKube provides a complete, browser-based workflow for Kubernetes cluster manag
 
 ---
 
-**[← Back to Docs](/)** | **[Next: API Reference](api-reference/)**
+**[← Back to Docs]({{ '/' | relative_url }})** | **[Next: API Reference]({{ '/api-reference/' | relative_url }})**
