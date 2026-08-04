@@ -189,29 +189,37 @@ body {
 
 /* Code Blocks & Syntax Highlighting Overrides */
 div.highlighter-rouge,
-.highlight,
+.highlight {
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+  margin: 1.25rem 0 !important;
+  box-shadow: none !important;
+}
+
 .highlight pre,
 pre.highlight,
 pre {
   background-color: #0f172a !important;
   color: #f8fafc !important;
-  border-radius: 8px;
-  padding: 1rem 1.25rem;
-  margin: 1.25rem 0;
+  border-radius: 8px !important;
+  padding: 1rem 1.25rem !important;
+  margin: 0 !important;
   overflow-x: auto;
   font-family: 'JetBrains Mono', monospace;
   font-size: 0.875rem;
   line-height: 1.6;
-  border: 1px solid #1e293b;
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  border: 1px solid #1e293b !important;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06) !important;
 }
 
 .highlight pre code,
 pre code {
   background: transparent !important;
   color: #f8fafc !important;
-  padding: 0;
-  border-radius: 0;
+  padding: 0 !important;
+  border: none !important;
+  border-radius: 0 !important;
 }
 
 /* Inline Code */
