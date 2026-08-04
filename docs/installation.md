@@ -1,6 +1,7 @@
 ---
 layout: default
 title: Installation & Setup
+permalink: /installation/
 ---
 
 # Installation & Setup

@@ -4,6 +4,7 @@ baseurl: "/pvekube"
 url: https://mevijays.github.io
 repository: mevijays/pvekube
 
+permalink: pretty
 theme: jekyll-theme-primer
 plugins:
   - jekyll-seo-tag
