@@ -12,11 +12,13 @@ Manage production-grade Kubernetes clusters on Proxmox without touching the CLI.
 ## Key Features
 
 ✅ **Single Binary** — No external dependencies or asset directories  
-✅ **Embedded Database** — SQLite with automatic schema migrations  
+✅ **Embedded Database** — SQLite with automatic schema migrations & persistent defaults  
 ✅ **Template Builder** — Automated Packer/Ansible image building via Proxmox API  
-✅ **Cluster Designer** — Network validation, IP planning, manifest preview  
-✅ **Live Status** — Real-time Cluster API object monitoring with conditions  
-✅ **Lifecycle Ops** — Scale workers/control-plane, delete clusters, rolling upgrades  
+✅ **Fast Linked Clones** — Sub-second VM instantiation via copy-on-write linked clones  
+✅ **Cluster Designer** — Real-time memory allocation checks, network validation, VIP probes  
+✅ **Reliable Provisioning** — Multi-stage readiness gates (API stability & Node/CNI checks before addons)  
+✅ **Live Status** — CAPI v1beta2 object monitoring with real-time condition evaluation  
+✅ **Lifecycle Ops** — Scale workers/control-plane, teardown with residue scrubbing, rolling upgrades  
 ✅ **Secure** — Encrypted credential storage, CSRF tokens, session management  
 
 ## Quick Start
@@ -99,10 +101,7 @@ All orchestration happens declaratively through Kubernetes resources — PVEKube
 - **[Troubleshooting](troubleshooting/)** — Common issues and solutions
 - **[Contributing](contributing/)** — Development setup and contribution guidelines
 
-## Known Limitations
-
 - **Upgrade path** not end-to-end tested (needs two templates on real Linux host)
-- **Deleted cluster status** shows "Deleting" forever (cosmetic, deletion works)
 - **Phase 10 enhancements** (self-managing cluster, CAPI backups, diagnostics) pending
 
 ## License

@@ -169,41 +169,44 @@ Runner: clusterctl generate cluster
   ├─ args: --infrastructure proxmox, --kubernetes-version, --control-plane-machine-count, --worker-machine-count
   └─ Reads cluster-template.yaml from CAPMOX release
   ↓
-clusterctl substitutes variables into ProxmoxCluster, KubeadmControlPlane, MachineDeployment manifests
+Post-Processing Transformations:
+  ├─ Replace full: true → full: false (Enforces Linked Clones for sub-second VM creation)
+  └─ Strip format: qcow2 (Satisfies CAPMOX validating webhook rules for linked clones)
   ↓
 YAML returned to browser; user sees and approves
 ```
 
-### 4. Cluster Apply
+### 4. Cluster Apply & Multi-Stage Readiness Pipeline
 
 ```
 Browser: Click "Apply — launch this cluster"
   ↓
 PVEKube HTTP handler: handleClustersApply()
   ├─ Decrypt Proxmox credentials from SQLite
-  ├─ Create capi.EnsureCredentialsStep:
-  │  └─ Update capmox-manager-credentials Secret in management cluster
-  │  └─ Restart CAPMOX controller (env vars resolved at pod startup)
-  └─ Create capi.ApplyStep:
-     └─ kubectl apply -f <manifest>
+  └─ Build multi-stage jobs.Spec:
   ↓
-Create Job: cluster.apply
+Step 1: Sync Proxmox Credentials
+  ├─ kubectl apply secret capmox-manager-credentials
+  └─ kubectl rollout restart deployment/capmox-controller-manager (if changed)
   ↓
-Step 1: Sync Proxmox credentials + controller restart
-  ├─ kubectl create secret generic capmox-manager-credentials --dry-run=client
-  ├─ kubectl apply -f - (creates or updates secret)
-  └─ kubectl rollout restart deployment/capmox-controller-manager
+Step 2: Apply Cluster API Manifest
+  ├─ kubectl apply -f <manifest> (Cluster, ProxmoxCluster, KubeadmControlPlane, MachineDeployment)
   ↓
-Step 2: kubectl apply cluster manifest
-  ├─ Cluster object created
-  ├─ ProxmoxCluster object created
-  ├─ KubeadmControlPlane object created
-  ├─ MachineDeployment objects created
-  └─ Manifests written to temp file
+Step 3: Wait for Workload Kubeconfig & API Stability
+  ├─ Poll for <cluster-name>-kubeconfig Secret in management cluster
+  └─ Execute 5 consecutive successful API calls (5s apart) to guarantee API server stability
   ↓
-Job completes; cluster record inserted into SQLite
+Step 4: Wait for Nodes & CNI Readiness (WaitForNodesReadyStep)
+  ├─ Poll workload cluster via kubectl get nodes
+  └─ Wait until all expected control-plane and worker nodes report Ready (CNI & cloud-init operational)
   ↓
-Browser: Live SSE streams kubectl output
+Step 5+: Install Post-Provisioning Addons
+  ├─ Apply metrics-server, Istio, or MetalLB manifests
+  └─ Guaranteed zero "dial tcp: no route to host" errors due to earlier readiness gates
+  ↓
+Job completes; cluster record updated in SQLite
+  ↓
+Browser: Live SSE streams job progress and step logs
 ```
 
 ### 5. Cluster Reconciliation
@@ -213,9 +216,9 @@ CAPMOX controller watches ProxmoxCluster + Machine objects
   ↓
 For each Machine:
   1. Allocate VMID (via Proxmox API)
-  2. Clone template VM to create new VM (via Proxmox API)
+  2. Create Linked Clone of template VM (sub-second copy-on-write)
   3. Configure VM (vCPU, memory, network, disk)
-  4. Boot VM
+  4. Boot VM immediately
   ↓
 kubeadm runs on each VM (via cloud-init)
   ├─ Init control plane (first control-plane machine)
@@ -224,14 +227,14 @@ kubeadm runs on each VM (via cloud-init)
   ↓
 Cluster API controllers mark conditions as Ready
   ├─ ControlPlaneInitialized
-  ├─ ControlPlaneReady
-  ├─ MachineDeploymentReady (workers)
+  ├─ ControlPlaneAvailable
+  ├─ WorkersAvailable
   ├─ InfrastructureReady
   └─ Available (overall)
   ↓
 Browser: Polls /clusters/{name}/status every 5s
   ├─ kubectl get cluster, machines, kubeadmcontrolplane, machinedeployment
-  ├─ Parses JSON and renders conditions table
+  ├─ Parses status.conditions for CAPI v1beta2 compatibility
   └─ When Ready, enables "Download kubeconfig" button
 ```
 

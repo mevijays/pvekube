@@ -94,7 +94,18 @@ PVEKube provides a complete, browser-based workflow for Kubernetes cluster manag
 
 ## Cluster Designer
 
-**Interactive form** for defining a Kubernetes cluster.
+**Interactive form** for defining a Kubernetes cluster with persistent defaults and real-time hardware accounting.
+
+### Real-Time Hardware Discovery
+
+- **Live Memory Accounting**: Whenever the cluster creation form is loaded, PVEKube bypasses cached metrics and executes a live Proxmox API discovery to calculate exact "Free to allocate" memory across nodes.
+- **Accurate Sizing Guidance**: Immediately reflects guest memory resizings or shutdowns on Proxmox without needing manual cache refreshes.
+
+### Persistent Cluster Defaults (`cluster_defaults`)
+
+- **Saved Form Inputs**: Remembers operator configuration defaults (e.g. SSH public keys, private registry URLs, registry CA certificates) in the `cluster_defaults` SQLite table.
+- **Sealed Secrets**: Private registry passwords are encrypted at rest using AES-GCM (same mechanism as Proxmox API tokens).
+- **Auto Pre-Fill**: Pre-fills saved preferences on new cluster creation, eliminating repetitive copy-pasting across clusters.
 
 ### Cluster Settings
 
@@ -149,13 +160,14 @@ PVEKube provides a complete, browser-based workflow for Kubernetes cluster manag
 
 ## Manifest Generation & Preview
 
-**clusterctl** wrapper for rendering cluster manifests.
+**clusterctl** wrapper for rendering optimized cluster manifests.
 
-### Process
+### Process & Transformations
 
 1. Calls `clusterctl generate cluster` with Proxmox connection details
 2. Substitutes all variables (VIP, node range, template VMID, etc.)
-3. Renders full YAML (Cluster, ProxmoxCluster, KubeadmControlPlane, MachineDeployment, etc.)
+3. **Linked Clones Transformation**: Patches `full: true` to `full: false` in `ProxmoxMachineTemplate` resources. This forces copy-on-write linked cloning, enabling sub-second VM instantiation instead of slow 20GB+ disk copies.
+4. **Validation Webhook Alignment**: Automatically strips `format: qcow2` declarations from `ProxmoxMachineTemplate` specs, satisfying CAPMOX's strict webhook requirement that format must be omitted when `full: false` is used.
 
 ### Preview Screen
 
@@ -165,21 +177,25 @@ PVEKube provides a complete, browser-based workflow for Kubernetes cluster manag
 
 ## Cluster Launch & Status
 
-**One-click apply** of Cluster API manifests to the management cluster.
+**One-click apply** of Cluster API manifests to the management cluster with guaranteed provisioning sequence.
 
-### Launch Workflow
+### Launch Workflow & Multi-Stage Readiness Gates
 
 1. Click **"Apply — launch this cluster"**
-2. Credentials synced to management cluster
-3. CAPMOX controller restarted (to pick up new credentials)
-4. kubectl apply manifest
-5. Cluster object created; reconciliation begins
+2. **Sync Credentials**: Proxmox API credentials synced to management cluster secret
+3. **Controller Restart**: CAPMOX controller restarted if credentials changed
+4. **Apply Manifest**: `kubectl apply` pushes Cluster API objects to KIND management cluster
+5. **Kubeconfig Secret Wait**: Waits for management cluster to publish workload `<cluster>-kubeconfig` secret
+6. **Control Plane API Stability Check**: Performs a 5-consecutive-success healthcheck loop (5s apart) against the workload API server to ensure stability before scheduling downstream workloads
+7. **Node & CNI Readiness Gate (`WaitForNodesReadyStep`)**: Polls `kubectl get nodes` until all expected control plane and worker nodes reach `Ready` state (verifying cloud-init, CNI pod startup, and node registration)
+8. **Post-Provisioning Addon Installation**: Safely applies requested manifests (`metrics-server`, `Istio`, `MetalLB`) without encountering `dial tcp: no route to host` errors
 
 ### Live Status Monitoring
 
 **Automatic polling** (every 5 seconds) of cluster state:
 
 - **Cluster Phase**: Provisioning → Provisioned → Deleting
+- **CAPI v1beta2 Condition Evaluation**: Parses `status.conditions` (`ControlPlaneAvailable`, `InfrastructureReady`, `WorkersAvailable`) to accurately represent readiness across Cluster API API contract versions
 - **Readiness flags**:
   - Control Plane Ready
   - Infrastructure Ready

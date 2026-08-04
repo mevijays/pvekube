@@ -481,6 +481,22 @@ CREATE TABLE admin_password (
 );
 ```
 
+### cluster_defaults
+
+Stores remembered cluster creation inputs (SSH keys, registry URLs, sealed registry passwords).
+
+```sql
+CREATE TABLE cluster_defaults (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  vm_ssh_keys TEXT NOT NULL DEFAULT '',
+  registry_host TEXT NOT NULL DEFAULT '',
+  registry_ca_cert TEXT NOT NULL DEFAULT '',
+  registry_username TEXT NOT NULL DEFAULT '',
+  registry_password_sealed BLOB,     -- AES-GCM encrypted
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+```
+
 ## Jobs Output Logging
 
 Each job step writes logs to a file:

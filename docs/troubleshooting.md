@@ -432,6 +432,61 @@ journalctl -u kubelet | tail -50
 - ✅ If node stuck: manually delete the old VM and let CAPI recreate it
 - ✅ Check Proxmox logs for VM creation errors
 
+## Performance & Provisioning Troubleshooting
+
+### Slow VM Power-On After Clone
+
+**Symptom**: VMs appear in Proxmox UI quickly but remain in "Stopped" state for several minutes before powering on.
+
+**Cause**: By default, CAPMOX specifies Full Clones (`full: true`), which requires Proxmox to copy 20GB+ disk images across storage. CAPMOX waits for the Proxmox UPID task to finish before proceeding to `qm set` and `qm start`.
+
+**Solution**:
+- ✅ Ensure PVEKube is updated to the version supporting **Linked Clones** (`full: false`).
+- ✅ Linked Clones create tiny copy-on-write delta disks referencing the base template in sub-second time.
+- ✅ PVEKube automatically transforms `full: true` to `full: false` during manifest generation.
+
+### Webhook Error: `Must set full=true when specifying format`
+
+**Symptom**: Manifest apply fails with `ProxmoxMachineTemplate "my-cluster" is invalid: spec.template.spec: Invalid value: Must set full=true when specifying format`.
+
+**Cause**: CAPMOX validating webhook strictly forbids `format: qcow2` or `format: raw` when `full: false` (Linked Clones) is set, because linked clones inherit disk format from the base template.
+
+**Solution**:
+- ✅ PVEKube automatically strips `format: qcow2` from manifests when generating templates with `full: false`.
+- ✅ If applying custom manifests manually via `kubectl`, remove `format: "qcow2"` from `ProxmoxMachineTemplate.spec.template.spec`.
+
+### Addon Installation Fails: `dial tcp <ip>:6443: connect: no route to host`
+
+**Symptom**: Cluster creation fails at Step 4/5 while installing `metrics-server`, `Istio`, or `MetalLB`.
+
+**Cause**: Manifest addons were previously applied immediately when the API server responded to a single health check ping, but before worker VMs booted or CNI pods (Calico/Cilium) were ready.
+
+**Solution**:
+- ✅ PVEKube includes **Multi-Stage Readiness Gates**:
+  1. API Server stability check requiring 5 consecutive successful pings (5s apart).
+  2. `WaitForNodesReadyStep` which polls `kubectl get nodes` until all expected nodes report `Ready`.
+- ✅ Verify worker VMs have network connectivity and cloud-init has finished executing.
+
+### Header Displays "Control plane not ready" Despite Green Conditions
+
+**Symptom**: Cluster detail header displays `Control plane not ready · Infrastructure not ready`, but condition cards show `ControlPlaneAvailable` and `InfrastructureReady` as green checkmarks.
+
+**Cause**: Cluster API `v1beta2` deprecated top-level boolean fields `status.controlPlaneReady` and `status.infrastructureReady` in favor of `status.conditions`.
+
+**Solution**:
+- ✅ PVEKube parses `status.conditions` (`ControlPlaneAvailable` and `InfrastructureReady`) for full CAPI `v1beta2` compliance.
+- ✅ Refresh browser page to update header display.
+
+### Stale "Free to Allocate" Memory Values in Cluster Form
+
+**Symptom**: After resizing or shutting down VMs on Proxmox, the cluster creation form still displays old memory availability (e.g., "32.0 GiB").
+
+**Cause**: Datacenter discovery metrics were previously read from SQLite cache without expiration.
+
+**Solution**:
+- ✅ PVEKube bypasses cached discovery and executes a live Proxmox API call whenever the "Launch a New Cluster" panel is loaded.
+- ✅ Simply navigate back to or refresh the "Clusters" tab to fetch real-time memory metrics.
+
 ## General Debugging
 
 ### Check PVEKube Logs
