@@ -15,6 +15,12 @@
     {{if .InstallMetricsServer}}metrics-server{{end}}{{if .InstallIstio}}{{if .InstallMetricsServer}}, {{end}}Istio{{end}}{{if .InstallMetalLB}}{{if or .InstallMetricsServer .InstallIstio}}, {{end}}MetalLB ({{.MetalLBIPPool}}){{end}}
   </p>
   {{end}}
+  {{if .RegistryHost}}
+  <p class="text-xs text-slate-500">
+    <i class="fa fa-archive mr-1"></i>Nodes will trust registry <code class="text-slate-300">{{.RegistryHost}}</code>
+    {{if .RegistryInsecure}}<span class="text-amber-400">(TLS verification skipped — no CA given)</span>{{else}}(via the CA in the manifest above){{end}}{{if .RegistryUsername}}, with pull credentials applied separately as a Secret{{end}}.
+  </p>
+  {{end}}
   <form hx-post="/clusters/apply" hx-target="#clusters-panel" hx-swap="outerHTML"
         hx-confirm="Apply this manifest and start launching real VMs on Proxmox?">
     <input type="hidden" name="csrf" value="{{.CSRF}}">
@@ -25,6 +31,11 @@
     {{if .InstallIstio}}<input type="hidden" name="install_istio" value="1">{{end}}
     {{if .InstallMetalLB}}<input type="hidden" name="install_metallb" value="1">
     <input type="hidden" name="metallb_ip_pool" value="{{.MetalLBIPPool}}">{{end}}
+    {{if .RegistryHost}}<input type="hidden" name="registry_host" value="{{.RegistryHost}}">
+    <textarea name="registry_ca_cert" class="hidden">{{.RegistryCACert}}</textarea>
+    {{if .RegistryUsername}}<input type="hidden" name="registry_username" value="{{.RegistryUsername}}">
+    <input type="hidden" name="registry_password" value="{{.RegistryPassword}}">{{end}}{{end}}
+    {{if .VMSSHKeys}}<input type="hidden" name="vm_ssh_keys" value="{{.VMSSHKeys}}">{{end}}
     <textarea name="manifest_yaml" class="hidden">{{.YAML}}</textarea>
     <button type="submit" data-loading-text="Launching cluster..." class="rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700">
       <i class="fa fa-rocket mr-1.5"></i>Apply — launch this cluster

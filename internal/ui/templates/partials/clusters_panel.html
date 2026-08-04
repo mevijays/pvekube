@@ -36,6 +36,46 @@
     <form id="cluster-form" class="space-y-6">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
 
+      {{if .Snapshot.Nodes}}
+      <div class="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+        <h3 class="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Memory available for new nodes</h3>
+        <p class="mb-3 text-xs text-slate-500">
+          Proxmox does not overcommit memory when placing cluster VMs: every guest's <em>configured</em> size is
+          reserved, whether or not it's running. So a node can look idle and still refuse a new worker.
+          <span class="text-slate-400">Keep (sockets x cores) memory per node under "Free to allocate".</span>
+        </p>
+        <table class="w-full text-left text-sm">
+          <thead class="text-slate-500">
+            <tr>
+              <th class="pb-2 font-normal">Node</th>
+              <th class="pb-2 font-normal">Total</th>
+              <th class="pb-2 font-normal">Reserved by existing guests</th>
+              <th class="pb-2 font-normal">Free to allocate</th>
+            </tr>
+          </thead>
+          <tbody>
+            {{range .Snapshot.Nodes}}
+            <tr class="border-t border-slate-800">
+              <td class="py-2 font-medium text-white">{{.Name}}</td>
+              {{if .CapacityKnown}}
+              <td class="py-2 text-slate-400">{{gib .MemTotalMB}} GiB</td>
+              <td class="py-2 text-slate-400">{{gib .MemAllocatedMB}} GiB</td>
+              <td class="py-2 font-medium {{if lt .MemReservableMB 4096}}text-amber-400{{else}}text-emerald-300{{end}}">
+                {{gib .MemReservableMB}} GiB
+              </td>
+              {{else}}
+              <td class="py-2 text-slate-400" colspan="3">
+                Capacity not in this cached snapshot —
+                <a href="/proxmox" class="underline hover:text-slate-200">refresh discovery</a> to calculate it.
+              </td>
+              {{end}}
+            </tr>
+            {{end}}
+          </tbody>
+        </table>
+      </div>
+      {{end}}
+
       <div class="grid gap-4 sm:grid-cols-2">
         <div>
           <label class="mb-1 block text-sm font-medium text-slate-300">Cluster name</label>
@@ -124,7 +164,8 @@
           </div>
           <div>
             <label class="mb-1 block text-sm font-medium text-slate-300">SSH public keys <span class="text-slate-500">(optional, comma-separated)</span></label>
-            <input type="text" name="vm_ssh_keys" placeholder="ssh-ed25519 AAAA..." class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+            <input type="text" name="vm_ssh_keys" value="{{.Defaults.VMSSHKeys}}" placeholder="ssh-ed25519 AAAA..." class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+            {{if .Defaults.VMSSHKeys}}<p class="mt-1 text-xs text-slate-500"><i class="fa fa-history mr-1"></i>Carried over from your last cluster — edit to override.</p>{{end}}
           </div>
         </div>
         {{if .Snapshot.Nodes}}
@@ -168,6 +209,64 @@
               <p class="mt-1 text-xs text-slate-500">A range or CIDR outside your Node IP range above, on the same subnet — MetalLB hands these out to Services of type LoadBalancer.</p>
             </div>
           </div>
+        </div>
+      </div>
+
+      <div>
+        <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Internal container registry</h3>
+        <p class="mb-2 text-xs text-slate-500">
+          Optional. Configures every node's containerd to trust and pull from a private registry.
+          Because this is baked into the machine templates, workers you add later inherit it automatically.
+        </p>
+        {{if .Defaults.RegistryHost}}
+        <div class="mb-2 flex items-start justify-between gap-3 rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-2">
+          <p class="text-xs text-slate-400">
+            <i class="fa fa-history mr-1"></i>Pre-filled from your last cluster. Edit any field to override, or clear the
+            host to build this one without a registry — the saved values stay for next time either way.
+          </p>
+          <button type="button" hx-post="/clusters/defaults/clear" hx-target="#clusters-panel" hx-swap="outerHTML"
+                  hx-vals='{"csrf": "{{$.CSRF}}"}'
+                  hx-confirm="Forget the saved SSH keys and registry settings? The next cluster form will come up blank."
+                  class="flex-none rounded-lg border border-slate-700 px-2.5 py-1 text-xs text-slate-300 hover:bg-slate-800">
+            <i class="fa fa-eraser mr-1"></i>Forget
+          </button>
+        </div>
+        {{end}}
+        <div class="space-y-3">
+          <div>
+            <label class="mb-1 block text-sm font-medium text-slate-300">Registry host</label>
+            <input type="text" name="registry_host" value="{{.Defaults.RegistryHost}}" placeholder="registry.internal.lan:5000"
+                   class="w-full max-w-sm rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+            <p class="mt-1 text-xs text-slate-500">Host and port only — no <code>https://</code>, no path.</p>
+          </div>
+          <div>
+            <label class="mb-1 block text-sm font-medium text-slate-300">CA certificate <span class="text-slate-500">(PEM)</span></label>
+            <textarea name="registry_ca_cert" rows="4" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+                      class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-white">{{.Defaults.RegistryCACert}}</textarea>
+            <p class="mt-1 text-xs text-slate-500">
+              The CA that signed your registry's self-signed cert. Leave blank to skip TLS verification instead
+              <span class="text-amber-400">(insecure — the connection is still encrypted but not authenticated)</span>.
+            </p>
+          </div>
+          <div class="flex flex-wrap gap-3">
+            <div>
+              <label class="mb-1 block text-sm font-medium text-slate-300">Username <span class="text-slate-500">(optional)</span></label>
+              <input type="text" name="registry_username" value="{{.Defaults.RegistryUsername}}" autocomplete="off"
+                     class="w-56 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+            </div>
+            <div>
+              <label class="mb-1 block text-sm font-medium text-slate-300">Password</label>
+              <input type="password" name="registry_password" value="{{.Defaults.RegistryPassword}}" autocomplete="new-password"
+                     class="w-56 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+            </div>
+          </div>
+          <p class="text-xs text-slate-500">
+            Credentials never enter the manifest — they're applied afterwards as a <code>dockerconfigjson</code>
+            Secret wired into the <code>default</code> namespace's default ServiceAccount. That covers ordinary
+            workloads in <code>default</code>; other namespaces need the Secret copied across (the job log prints
+            the exact commands), and system pods in <code>kube-system</code> aren't covered at all.
+            <span class="text-slate-400">TLS trust, above, applies to every pull on every node regardless.</span>
+          </p>
         </div>
       </div>
 

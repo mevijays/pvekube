@@ -7,6 +7,7 @@ import (
 	"embed"
 	"fmt"
 	"html/template"
+	"strconv"
 )
 
 //go:embed templates/*.html templates/partials/*.html
@@ -55,7 +56,16 @@ func Render(w interface {
 	return t.ExecuteTemplate(w, "layout", data)
 }
 
-var FuncMap = template.FuncMap{}
+var FuncMap = template.FuncMap{
+	// gib renders a mebibyte count as GiB with one decimal. Memory figures
+	// are held in MiB internally (that's what both Proxmox and CAPMOX's
+	// machine specs use) but GiB is what an operator sizing a node thinks
+	// in, so converting in the template keeps the unit conversion out of
+	// every call site.
+	"gib": func(mib int64) string {
+		return strconv.FormatFloat(float64(mib)/1024, 'f', 1, 64)
+	},
+}
 
 // Partials are HTMX fragment responses: no <html>/layout wrapper, just the
 // swapped-in element. Each partial file defines {{define "<name>"}}.

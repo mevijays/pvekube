@@ -1,0 +1,16 @@
+{{define "cluster_delete_error"}}
+<div id="cluster-status" class="space-y-6">
+  <div class="flex items-start gap-3 rounded-xl border border-red-900 bg-red-950/20 px-4 py-3 text-sm text-red-200">
+    <i class="fa fa-exclamation-circle mt-0.5 text-red-400"></i>
+    <div>
+      <div class="font-semibold text-red-300 mb-1">Delete cluster failed</div>
+      <div>{{.Error}}</div>
+    </div>
+  </div>
+  <div class="flex gap-2">
+    <a href="/clusters/{{.ClusterName}}" class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800">
+      <i class="fa fa-refresh mr-1.5"></i>Reload page
+    </a>
+  </div>
+</div>
+{{end}}

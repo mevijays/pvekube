@@ -18,6 +18,7 @@ func (s *Server) handleClusterDetailPage(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleClusterStatus(w http.ResponseWriter, r *http.Request) {
+	session := r.Context().Value(ctxSessionKey{}).(string)
 	name := r.PathValue("name")
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
@@ -26,6 +27,7 @@ func (s *Server) handleClusterStatus(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		ui.RenderPartial(w, "cluster_status", map[string]any{
 			"ClusterName": name,
+			"CSRF":        s.csrfFor(session),
 			"Status":      &capi.ClusterStatus{Found: false},
 		})
 		return
@@ -47,14 +49,14 @@ func (s *Server) handleClusterStatus(w http.ResponseWriter, r *http.Request) {
 
 	ui.RenderPartial(w, "cluster_status", map[string]any{
 		"ClusterName":     name,
+		"CSRF":            s.csrfFor(session),
 		"Status":          status,
 		"KubeconfigReady": kubeconfigReady,
 	})
 }
 
-// runLifecycleJob starts a job and, unlike other job-progress renders in
-// PVEKube, reloads back into the cluster status panel (not a list) since
-// that's the page the operator is already looking at.
+// runLifecycleJob starts a job and reloads back into the cluster status panel
+// (not a list) since that's the page the operator is already looking at.
 func (s *Server) runLifecycleJob(w http.ResponseWriter, name string, spec *jobs.Spec) {
 	jobID, err := s.jobs.Start(spec, `{"cluster":"`+name+`"}`)
 	if err != nil {
@@ -64,6 +66,25 @@ func (s *Server) runLifecycleJob(w http.ResponseWriter, name string, spec *jobs.
 	ui.RenderPartial(w, "job_progress", map[string]any{
 		"JobID": jobID, "Title": spec.Title,
 		"WrapperID": "cluster-status", "ReloadURL": "/clusters/" + name + "/status", "ReloadTarget": "#cluster-status",
+	})
+}
+
+// runDeleteJob is like runLifecycleJob but the cluster will be gone when the
+// job completes, so the "OK" button navigates to /clusters rather than
+// trying to reload the deleted cluster's status page.
+func (s *Server) runDeleteJob(w http.ResponseWriter, name string, spec *jobs.Spec) {
+	jobID, err := s.jobs.Start(spec, `{"cluster":"`+name+`"}`)
+	if err != nil {
+		http.Error(w, "starting job: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	ui.RenderPartial(w, "job_progress", map[string]any{
+		"JobID":         jobID,
+		"Title":         spec.Title,
+		"WrapperID":     "cluster-status",
+		"ReloadURL":     "/clusters/panel",
+		"ReloadTarget":  "#clusters-panel",
+		"IsDeleteJob":   true,
 	})
 }
 
@@ -102,7 +123,10 @@ func (s *Server) handleClusterScaleControlPlane(w http.ResponseWriter, r *http.R
 func (s *Server) handleClusterDelete(w http.ResponseWriter, r *http.Request) {
 	session := r.Context().Value(ctxSessionKey{}).(string)
 	if !s.checkCSRF(r, session) {
-		http.Error(w, "bad csrf", http.StatusForbidden)
+		ui.RenderPartial(w, "cluster_delete_error", map[string]any{
+			"ClusterName": r.PathValue("name"),
+			"Error":       "Security token mismatch — please refresh the page and try again.",
+		})
 		return
 	}
 	name := r.PathValue("name")
@@ -110,10 +134,11 @@ func (s *Server) handleClusterDelete(w http.ResponseWriter, r *http.Request) {
 
 	spec := capi.DeleteClusterSpec(s.dataDir, s.binDir, name)
 	spec.Step("Remove local record", func(c *jobs.Ctx) error {
+		c.Logf("Removing cluster record from local database")
 		_, err := s.db.Exec(`DELETE FROM clusters WHERE name = ?`, name)
 		return err
 	})
-	s.runLifecycleJob(w, name, spec)
+	s.runDeleteJob(w, name, spec)
 }
 
 func (s *Server) handleClusterKubeconfig(w http.ResponseWriter, r *http.Request) {

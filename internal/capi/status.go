@@ -110,7 +110,14 @@ func GetStatus(ctx context.Context, dataDir, binDir, name string) (*ClusterStatu
 
 	status := &ClusterStatus{
 		Found: true, Phase: co.Status.Phase,
-		ControlPlaneReady: co.Status.ControlPlaneReady, InfrastructureReady: co.Status.InfrastructureReady,
+	}
+	for _, c := range co.Status.Conditions {
+		if c.Type == "ControlPlaneAvailable" && c.Status == "True" {
+			status.ControlPlaneReady = true
+		}
+		if c.Type == "InfrastructureReady" && c.Status == "True" {
+			status.InfrastructureReady = true
+		}
 	}
 
 	if out, err := exec.CommandContext(cctx, kubectlBin, "--kubeconfig", kcPath, "get", "machinedeployment", name+"-workers",

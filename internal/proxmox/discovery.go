@@ -28,6 +28,21 @@ type Node struct {
 	MemUsedMB   int64   `json:"mem_used_mb"`
 	DiskTotalGB int64   `json:"disk_total_gb"`
 	DiskUsedGB  int64   `json:"disk_used_gb"`
+
+	// MemAllocatedMB is the sum of every guest's CONFIGURED memory on this
+	// node — not what they're actually using. MemReservableMB is what's left
+	// for a new VM. These exist because Proxmox's own "free memory" is
+	// actively misleading when planning a cluster: CAPMOX refuses to
+	// overcommit, so a node can show tens of GB free while still rejecting a
+	// new worker. See nodeAllocation for the derivation.
+	MemAllocatedMB  int64 `json:"mem_allocated_mb"`
+	MemReservableMB int64 `json:"mem_reservable_mb"`
+	// CapacityKnown distinguishes "nothing allocated" from "this snapshot
+	// predates capacity tracking". Discovery snapshots are cached in SQLite,
+	// so an older cached blob decodes with the fields above at zero, which
+	// would otherwise render as "everything is free" — the exact wrong
+	// answer. The UI shows a refresh prompt instead when this is false.
+	CapacityKnown bool `json:"capacity_known"`
 }
 
 // Storage describes one storage pool, resolved down to the disk format
@@ -63,6 +78,21 @@ func (c *Client) Discover(ctx context.Context) (*Snapshot, error) {
 	nodes, err := c.nodes(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing nodes (needs Sys.Audit — see permission checklist): %w", err)
+	}
+	for i := range nodes {
+		alloc, err := c.nodeAllocation(ctx, nodes[i].Name)
+		if err != nil {
+			// Capacity is advisory: a node that won't list its guests
+			// shouldn't block discovery and lock the operator out of every
+			// screen. Leave CapacityKnown false so the UI says "unknown"
+			// rather than implying the node is empty.
+			continue
+		}
+		nodes[i].MemAllocatedMB = alloc / 1024 / 1024
+		if r := nodes[i].MemTotalMB - nodes[i].MemAllocatedMB; r > 0 {
+			nodes[i].MemReservableMB = r
+		}
+		nodes[i].CapacityKnown = true
 	}
 	snap.Nodes = nodes
 
@@ -115,6 +145,57 @@ func (c *Client) nodes(ctx context.Context) ([]Node, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+// nodeAllocation returns the total configured memory (bytes) of every guest
+// on a node, which is what CAPMOX subtracts from the node's total when
+// deciding whether a new VM fits.
+//
+// This is a deliberate port of CAPMOX v0.9.0's
+// APIClient.GetReservableMemoryBytes (pkg/proxmox/goproxmox/api_client.go) —
+// read from its source, not inferred from behaviour, after two attempts to
+// derive the rule from observed numbers gave wrong answers. The rules that
+// matter and are easy to get wrong:
+//
+//   - It uses each guest's maxmem (configured size), NOT current usage. A
+//     node showing 60 GB "free" in `free -h` can still reject a new VM.
+//   - STOPPED guests count in full. Powering a VM off frees nothing as far
+//     as scheduling is concerned; only reducing or deleting it does.
+//   - VM templates are skipped (they can never start), but there is no
+//     equivalent skip for containers.
+//   - Both QEMU VMs and LXC containers count.
+//
+// Note CAPMOX also scales the node total by schedulerHints.memoryAdjustment
+// (default 100 = no overcommit). PVEKube never sets that field, so the
+// default applies and this reports the un-adjusted figure.
+func (c *Client) nodeAllocation(ctx context.Context, node string) (int64, error) {
+	var vms []struct {
+		VMID     int   `json:"vmid"`
+		MaxMem   int64 `json:"maxmem"`
+		Template int   `json:"template"`
+	}
+	if err := c.get(ctx, "/nodes/"+node+"/qemu", &vms); err != nil {
+		return 0, err
+	}
+	var total int64
+	for _, vm := range vms {
+		if vm.Template != 0 {
+			continue
+		}
+		total += vm.MaxMem
+	}
+
+	var cts []struct {
+		VMID   int   `json:"vmid"`
+		MaxMem int64 `json:"maxmem"`
+	}
+	if err := c.get(ctx, "/nodes/"+node+"/lxc", &cts); err != nil {
+		return 0, err
+	}
+	for _, ct := range cts {
+		total += ct.MaxMem
+	}
+	return total, nil
 }
 
 func (c *Client) storage(ctx context.Context) ([]Storage, error) {

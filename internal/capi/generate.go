@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -68,6 +69,11 @@ type GenerateInput struct {
 	NumSockets       int    // defaults to 2 if 0
 	NumCores         int    // defaults to 4 if 0
 	MemoryMiB        int    // defaults to 8048 if 0
+
+	// Registry, when set, has its CA and containerd config injected into
+	// every machine template — see InjectRegistryTrust. Zero value means no
+	// registry and leaves the manifest untouched.
+	Registry RegistryConfig
 }
 
 func (in GenerateInput) env() []string {
@@ -164,7 +170,24 @@ func Generate(ctx context.Context, dataDir, binDir string, in GenerateInput) (st
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("clusterctl generate cluster failed: %w\n%s", err, stderr.String())
 	}
-	return stdout.String(), nil
+
+	// Tweak: Use Linked Clones instead of Full Clones to vastly speed up VM cloning
+	// and power-on time. The default cluster-template.yaml from CAPMOX uses full: true.
+	manifest := strings.ReplaceAll(stdout.String(), "full: true", "full: false")
+
+	// CAPMOX webhook strictly requires format to NOT be set when full is false.
+	// We use regex to remove any format: qcow2 or format: "qcow2" lines.
+	manifest = regexp.MustCompile(`(?m)^\s*format:\s*"?qcow2"?\s*$`).ReplaceAllString(manifest, "")
+
+	// Internal registry trust has to be baked into the machine templates,
+	// not applied afterwards — containerd needs the CA before kubeadm pulls
+	// its first image. No-op (and byte-identical output) when unset.
+	manifest, err := InjectRegistryTrust(manifest, in.Registry)
+	if err != nil {
+		return "", err
+	}
+
+	return manifest, nil
 }
 
 // EnsureCredentialsStep creates or updates the capmox-manager-credentials
@@ -362,10 +385,16 @@ func installCilium(c *jobs.Ctx, dataDir, binDir, clusterName string) error {
 // Any selected post-provision addons (metrics-server, Istio, MetalLB) are
 // installed last, after CNI, so they land on a cluster that already has pod
 // networking.
-func ApplySpec(clusterName, dataDir, binDir, proxmoxURL, tokenID, secret, manifestYAML string, cni CNIFlavor, addons AddonSelection) *jobs.Spec {
+func ApplySpec(clusterName, dataDir, binDir, proxmoxURL, tokenID, secret, manifestYAML string, cni CNIFlavor, addons AddonSelection, registry RegistryConfig) *jobs.Spec {
 	spec := jobs.NewSpec("cluster.apply", "Apply cluster "+clusterName).
 		Step("Sync Proxmox credentials", EnsureCredentialsStep(dataDir, binDir, proxmoxURL, tokenID, secret)).
 		Step("kubectl apply", ApplyStep(dataDir, binDir, manifestYAML)).
-		Step("Install CNI", EnsureCNIStep(dataDir, binDir, clusterName, cni))
+		Step("Install CNI", EnsureCNIStep(dataDir, binDir, clusterName, cni)).
+		Step("Wait for nodes & CNI readiness", WaitForNodesReadyStep(dataDir, binDir, clusterName))
+	// Registry trust itself is already on the nodes via the manifest; this
+	// only adds the pull credentials, which need a reachable API server.
+	if registry.HasAuth() {
+		spec.Step("Configure registry credentials", InstallRegistryCredentialsStep(dataDir, binDir, clusterName, registry))
+	}
 	return AddonSteps(spec, dataDir, binDir, clusterName, addons)
 }

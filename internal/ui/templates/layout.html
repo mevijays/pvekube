@@ -148,6 +148,9 @@
     // class-based rule, layered or not. So this walks known utility-class
     // selectors and sets (or clears) inline style properties directly,
     // re-run after every htmx swap since new DOM keeps arriving.
+    var WHITE_ON_COLOR_BG = '.bg-brand-500, .bg-brand-600, .bg-brand-700, ' +
+      '.bg-red-600, .bg-red-700, .bg-emerald-600, .bg-emerald-700, ' +
+      '.bg-amber-600, .bg-amber-700, .bg-slate-700';
     var LIGHT_REPAINT_RULES = [
       ['.bg-slate-950, .bg-slate-950\\/50', 'background-color', '#faf9ff'],
       ['.bg-slate-900, .bg-slate-900\\/60, .bg-slate-900\\/40', 'background-color', '#ffffff'],
@@ -156,7 +159,16 @@
       ['.bg-black\\/40, .bg-black\\/50', 'background-color', '#f3f2fa'],
       ['.bg-black\\/70', 'background-color', 'rgba(80,70,120,0.5)'],
       ['.border-slate-700, .border-slate-800', 'border-color', '#e2defa'],
-      ['.text-white', 'color', '#211b3d'],
+      // text-white is ambiguous: most uses are light text on a dark slate
+      // panel (should flip to dark ink), but it's ALSO the correct,
+      // deliberate choice for text/icons sitting on a solid brand/status
+      // button — nav logo, primary CTAs, the confirm modal's red button,
+      // checklist status-circle icons. Flipping those too made white-on-
+      // purple render as near-black-on-purple. WHITE_ON_COLOR_BG is every
+      // solid button/badge background where text-white must stay white
+      // regardless of theme; closest() walks up from the text node to catch
+      // icons nested inside the colored element, not just the element itself.
+      ['.text-white', 'color', '#211b3d', WHITE_ON_COLOR_BG],
       ['.text-slate-200, .text-slate-300', 'color', '#3d3760'],
       ['.text-slate-400, .text-slate-500', 'color', '#746c94'],
       ['.bg-red-950\\/50, .bg-red-950\\/20, .bg-red-950\\/10', 'background-color', '#fef2f2'],
@@ -176,11 +188,21 @@
       var isLight = document.documentElement.getAttribute('data-theme') === 'light';
       var scope = root || document;
       LIGHT_REPAINT_RULES.forEach(function(rule) {
-        var selector = rule[0], prop = rule[1], value = rule[2];
+        var selector = rule[0], prop = rule[1], value = rule[2], except = rule[3];
         var nodes = scope.querySelectorAll ? scope.querySelectorAll(selector) : [];
         for (var i = 0; i < nodes.length; i++) {
-          if (isLight) nodes[i].style.setProperty(prop, value, 'important');
-          else nodes[i].style.removeProperty(prop);
+          var el = nodes[i];
+          // closest() matches the element itself as well as its ancestors,
+          // which covers both shapes this needs: text-white sitting ON the
+          // colored button, and an <i> icon nested INSIDE it.
+          if (except && el.closest && el.closest(except)) {
+            // Clear any inline value a previous pass may have set, so
+            // toggling themes can't leave dark ink stranded on a button.
+            el.style.removeProperty(prop);
+            continue;
+          }
+          if (isLight) el.style.setProperty(prop, value, 'important');
+          else el.style.removeProperty(prop);
         }
       });
     }

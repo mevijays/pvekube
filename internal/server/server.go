@@ -86,6 +86,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /clusters", s.requireAuth(s.handleClustersPage))
 	mux.HandleFunc("GET /clusters/panel", s.requireAuth(s.handleClustersPanel))
 	mux.HandleFunc("GET /clusters/list", s.requireAuth(s.handleClustersList))
+	mux.HandleFunc("POST /clusters/defaults/clear", s.requireAuth(s.handleClustersDefaultsClear))
 	mux.HandleFunc("POST /clusters/check-ip", s.requireAuth(s.handleClustersCheckIP))
 	mux.HandleFunc("POST /clusters/preview", s.requireAuth(s.handleClustersPreview))
 	mux.HandleFunc("POST /clusters/apply", s.requireAuth(s.handleClustersApply))

@@ -27,7 +27,19 @@
         <input type="hidden" name="csrf" value="{{$.CSRF}}">
         <div>
           <label class="mb-1 block text-xs text-slate-400">Worker count</label>
-          <input type="number" name="replicas" min="0" value="{{.Status.WorkerReplicas}}" class="w-20 rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-white">
+          <!--
+            id + hx-preserve keep THIS DOM node across the "every 5s" poll
+            above instead of letting the poll's fresh render replace it.
+            Without it, the poll resets this field to the server's current
+            count every ~5s regardless of what the operator just typed —
+            confirmed live: submitting looked like it did nothing because by
+            the time "Scale workers" was clicked, a poll tick had already
+            silently reverted the input back to the old value, so the
+            request that went out asked for no change at all.
+          -->
+          <input type="number" id="scale-workers-replicas" hx-preserve="true"
+                 name="replicas" min="0" value="{{.Status.WorkerReplicas}}"
+                 class="w-20 rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-white">
         </div>
         <button type="submit" class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800">Scale workers</button>
       </form>
@@ -36,9 +48,11 @@
         <input type="hidden" name="csrf" value="{{$.CSRF}}">
         <div>
           <label class="mb-1 block text-xs text-slate-400">Control plane count</label>
-          <select name="replicas" class="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-white">
-            <option value="1">1</option>
-            <option value="3">3</option>
+          <!-- Same hx-preserve reasoning as the worker input above. -->
+          <select id="scale-controlplane-replicas" hx-preserve="true" name="replicas"
+                  class="rounded-lg border border-slate-700 bg-slate-950 px-2 py-1.5 text-sm text-white">
+            <option value="1" {{if eq .Status.ControlPlaneReplicas 1}}selected{{end}}>1</option>
+            <option value="3" {{if eq .Status.ControlPlaneReplicas 3}}selected{{end}}>3</option>
           </select>
         </div>
         <button type="submit" class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800">Scale control plane</button>
