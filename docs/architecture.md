@@ -10,56 +10,73 @@ permalink: /architecture/
 
 PVEKube bridges Proxmox and Kubernetes Cluster API (CAPI) to provide a declarative, GitOps-ready interface for launching production Kubernetes clusters on Proxmox infrastructure.
 
+### Component Architecture Diagram
+
+```mermaid
+flowchart TB
+    subgraph Host["PVEKube Host (Ubuntu VM / Bare Metal)"]
+        subgraph Server["PVEKube Web App (Go Binary)"]
+            UI["Web UI (Embedded HTML / Tailwind)"]
+            API["HTTP API (Port 8080)"]
+            DB[(SQLite DB - Encrypted Secrets)]
+            Engine["Job Engine (SSE Progress Logs)"]
+        end
+
+        subgraph Management["KIND Management Cluster (Docker)"]
+            KubeAPI["kube-apiserver"]
+            CAPI["CAPI Core Controller"]
+            Bootstrap["Kubeadm Bootstrap Provider"]
+            CAPMOX["CAPMOX Infrastructure Provider"]
+            IPAM["In-Cluster IPAM Provider"]
+        end
+    end
+
+    subgraph Proxmox["Proxmox VE Cluster (Hypervisor)"]
+        PVE_API["Proxmox REST API (Port 8006)"]
+        Template["Node Base Template (VMID)"]
+        Bridge["Network Bridge (vmbr0)"]
+    end
+
+    subgraph Workload["Workload Kubernetes Clusters"]
+        CP_VMs["Control Plane VMs (kubeadm)"]
+        Worker_VMs["Worker VMs (MachineDeployment)"]
+        CNI["CNI Network (Calico / Cilium)"]
+    end
+
+    UI --> API
+    API --> DB
+    API --> Engine
+    Engine -- "clusterctl / kubectl" --> KubeAPI
+    CAPMOX -- "Clones & Configs" --> PVE_API
+    PVE_API -- "Linked Clones (sub-second)" --> CP_VMs
+    PVE_API -- "Linked Clones (sub-second)" --> Worker_VMs
+    CP_VMs <--> CNI
+    Worker_VMs <--> CNI
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                        PVEKube Host (Ubuntu VM)             │
-├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │  PVEKube Web Server (Go binary)                     │   │
-│  │  ├─ HTTP API (port 8080)                            │   │
-│  │  ├─ SQLite Database (encrypted secrets)             │   │
-│  │  ├─ Job Engine (persistent state, SSE streams)      │   │
-│  │  └─ UI (embedded templates + assets)                │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                           ↕️                                 │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │  KIND Cluster (Management Cluster)                  │   │
-│  │  ├─ kube-apiserver                                  │   │
-│  │  ├─ CAPI Core Controller (v1.12.10)                 │   │
-│  │  ├─ CAPI Bootstrap (kubeadm)                        │   │
-│  │  ├─ CAPI Control Plane (kubeadm)                    │   │
-│  │  ├─ CAPMOX Infrastructure Provider (v0.9.0)         │   │
-│  │  └─ In-Cluster IPAM (v1.1.0)                        │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                           ↕️                                 │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │  Docker                                              │   │
-│  │  ├─ KIND container (kubernetes cluster)             │   │
-│  │  └─ image-builder container (Packer/Ansible)        │   │
-│  └─────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
-                           ↕️ (API calls)
-┌─────────────────────────────────────────────────────────────┐
-│                    Proxmox VE (Hypervisor)                  │
-├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐          │
-│  │   Node 1    │  │   Node 2    │  │   Node 3    │          │
-│  ├─────────────┤  ├─────────────┤  ├─────────────┤          │
-│  │ Template VM │  │ Cluster VMs │  │ Cluster VMs │          │
-│  │ (snapshot)  │  │             │  │             │          │
-│  └─────────────┘  └─────────────┘  └─────────────┘          │
-│  ┌──────────────────────────────────────────────────┐        │
-│  │  vmbr0 (Network Bridge)                          │        │
-│  └──────────────────────────────────────────────────┘        │
-└─────────────────────────────────────────────────────────────┘
-                           ↕️ (kube API)
-┌─────────────────────────────────────────────────────────────┐
-│              Workload Kubernetes Clusters                    │
-│  (CAPI Cluster objects reconciled by CAPMOX)                │
-│  ├─ Control Plane VMs (kubeadm-managed)                     │
-│  ├─ Worker VMs (MachineDeployment-managed)                  │
-│  └─ In-Cluster Networking (CNI, IPAM)                       │
-└─────────────────────────────────────────────────────────────┘
+
+### Provisioning Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as Operator (Browser)
+    participant Server as PVEKube Server
+    participant KIND as Management Cluster (KIND)
+    participant CAPMOX as CAPMOX Controller
+    participant PVE as Proxmox VE API
+    participant Workload as Workload Cluster VMs
+
+    User->>Server: 1. Fill Form & Click Apply
+    Server->>Server: 2. Transform Manifest (Linked Clones: full=false)
+    Server->>KIND: 3. Sync Credentials & kubectl apply
+    KIND->>CAPMOX: 4. Reconcile ProxmoxCluster & Machines
+    CAPMOX->>PVE: 5. Create Linked Clone & Power On VMs
+    PVE->>Workload: 6. Boot Guest VMs & Run Cloud-Init (kubeadm)
+    Workload-->>KIND: 7. Nodes Join & ControlPlaneAvailable
+    Server->>Workload: 8. Poll Node Readiness (WaitForNodesReadyStep)
+    Workload-->>Server: 9. All Nodes Ready
+    Server->>Workload: 10. Install Addons (metrics-server, CNI)
+    Server-->>User: 11. Cluster Ready (Download Kubeconfig)
 ```
 
 ## Component Roles

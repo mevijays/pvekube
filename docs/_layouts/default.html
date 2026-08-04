@@ -74,5 +74,25 @@
       </div>
     </div>
   </footer>
+
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <script>
+    document.addEventListener("DOMContentLoaded", function () {
+      mermaid.initialize({
+        startOnLoad: true,
+        theme: 'dark',
+        themeVariables: {
+          darkMode: true,
+          background: '#0f172a',
+          primaryColor: '#4f46e5',
+          primaryTextColor: '#f8fafc',
+          primaryBorderColor: '#6366f1',
+          lineColor: '#818cf8',
+          secondaryColor: '#1e293b',
+          tertiaryColor: '#0f172a'
+        }
+      });
+    });
+  </script>
 </body>
 </html>
