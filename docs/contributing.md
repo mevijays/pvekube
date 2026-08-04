@@ -19,7 +19,7 @@ We welcome contributions! This guide covers development setup, architecture over
 ### Clone and Build
 
 ```bash
-git clone https://github.com/ionos-cloud/golang-proxmox-clusterctl-k8s
+git clone https://github.com/mevijays/pvekube
 cd golang-proxmox-clusterctl-k8s
 
 # Build for your local platform
@@ -483,6 +483,6 @@ By contributing, you agree that your contributions will be licensed under the Ap
 
 ---
 
-**Questions?** Open an issue or start a [discussion](https://github.com/ionos-cloud/golang-proxmox-clusterctl-k8s/discussions).
+**Questions?** Open an issue or start a [discussion](https://github.com/mevijays/pvekube/discussions).
 
 **[← Back to Docs](/)** | **[Troubleshooting](troubleshooting/)**

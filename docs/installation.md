@@ -35,7 +35,7 @@ title: Installation & Setup
 If you're building on macOS or a different architecture, cross-compile for Linux x86_64:
 
 ```bash
-git clone https://github.com/ionos-cloud/golang-proxmox-clusterctl-k8s
+git clone https://github.com/mevijays/pvekube
 cd golang-proxmox-clusterctl-k8s
 
 # Cross-compile for Linux x86_64
@@ -51,7 +51,7 @@ file pvekube
 If building directly on the Ubuntu VM:
 
 ```bash
-git clone https://github.com/ionos-cloud/golang-proxmox-clusterctl-k8s
+git clone https://github.com/mevijays/pvekube
 cd golang-proxmox-clusterctl-k8s
 go build -o pvekube ./cmd/pvekube
 ```
@@ -286,4 +286,4 @@ journalctl -u pvekube -f
 
 ---
 
-**Questions?** [Open an issue](https://github.com/ionos-cloud/golang-proxmox-clusterctl-k8s/issues) or start a [discussion](https://github.com/ionos-cloud/golang-proxmox-clusterctl-k8s/discussions).
+**Questions?** [Open an issue](https://github.com/mevijays/pvekube/issues) or start a [discussion](https://github.com/mevijays/pvekube/discussions).

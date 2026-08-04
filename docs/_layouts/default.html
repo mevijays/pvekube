@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en-US">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  {% seo %}
+  <link rel="stylesheet" href="{{ "/assets/css/style.css?v=" | append: site.github.build_revision | relative_url }}">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="header-wrapper">
+      <a class="site-title" href="{{ "/" | relative_url }}">
+        <i class="fa-solid fa-cubes text-indigo"></i> <span>PVEKube</span>
+      </a>
+      <nav class="site-nav">
+        <a href="{{ "/" | relative_url }}" class="nav-link">Home</a>
+        <a href="{{ "/installation/" | relative_url }}" class="nav-link">Getting Started</a>
+        <a href="{{ "/architecture/" | relative_url }}" class="nav-link">Architecture</a>
+        <a href="{{ "/features/" | relative_url }}" class="nav-link">Features</a>
+        <a href="{{ "/api-reference/" | relative_url }}" class="nav-link">API Reference</a>
+        <a href="{{ "/troubleshooting/" | relative_url }}" class="nav-link">Troubleshooting</a>
+        <a href="https://github.com/mevijays/pvekube" target="_blank" rel="noopener" class="nav-link github-btn">
+          <i class="fa-brands fa-github"></i> GitHub
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <div class="main-layout">
+    <aside class="sidebar-nav">
+      <div class="sidebar-section">
+        <div class="sidebar-heading">Documentation</div>
+        <a href="{{ "/" | relative_url }}" class="sidebar-link {% if page.url == '/' %}active{% endif %}">
+          <i class="fa-solid fa-house"></i> Overview
+        </a>
+        <a href="{{ "/installation/" | relative_url }}" class="sidebar-link {% if page.url == '/installation/' %}active{% endif %}">
+          <i class="fa-solid fa-rocket"></i> Getting Started
+        </a>
+        <a href="{{ "/features/" | relative_url }}" class="sidebar-link {% if page.url == '/features/' %}active{% endif %}">
+          <i class="fa-solid fa-list-check"></i> Features
+        </a>
+        <a href="{{ "/architecture/" | relative_url }}" class="sidebar-link {% if page.url == '/architecture/' %}active{% endif %}">
+          <i class="fa-solid fa-sitemap"></i> Architecture
+        </a>
+        <a href="{{ "/api-reference/" | relative_url }}" class="sidebar-link {% if page.url == '/api-reference/' %}active{% endif %}">
+          <i class="fa-solid fa-code"></i> API & Database
+        </a>
+        <a href="{{ "/troubleshooting/" | relative_url }}" class="sidebar-link {% if page.url == '/troubleshooting/' %}active{% endif %}">
+          <i class="fa-solid fa-wrench"></i> Troubleshooting
+        </a>
+        <a href="{{ "/contributing/" | relative_url }}" class="sidebar-link {% if page.url == '/contributing/' %}active{% endif %}">
+          <i class="fa-solid fa-code-pull-request"></i> Contributing
+        </a>
+      </div>
+    </aside>
+
+    <main class="main-content" id="main-content" role="main">
+      {{ content }}
+    </main>
+  </div>
+
+  <footer class="site-footer">
+    <div class="footer-wrapper">
+      <div class="footer-left">
+        <p><strong>PVEKube</strong> &mdash; Kubernetes Cluster Management on Proxmox VE via Cluster API</p>
+      </div>
+      <div class="footer-right">
+        <a href="https://github.com/mevijays/pvekube" target="_blank" rel="noopener"><i class="fa-brands fa-github"></i> Repository</a>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

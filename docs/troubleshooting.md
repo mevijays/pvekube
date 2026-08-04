@@ -545,7 +545,7 @@ If you're stuck:
 1. **Check logs** (PVEKube + management cluster + Proxmox)
 2. **Check network** (ping, curl, route)
 3. **Check state** (cluster status, node status, VM status)
-4. **Open an issue**: [GitHub Issues](https://github.com/ionos-cloud/golang-proxmox-clusterctl-k8s/issues)
+4. **Open an issue**: [GitHub Issues](https://github.com/mevijays/pvekube/issues)
    - Include: PVEKube version, cluster design (control plane count, worker count), error logs
    - Redact: Proxmox IPs, token secrets
 

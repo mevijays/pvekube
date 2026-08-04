@@ -110,8 +110,8 @@ Apache 2.0
 
 ## Community
 
-- **Issues**: [GitHub Issues](https://github.com/ionos-cloud/golang-proxmox-clusterctl-k8s/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/ionos-cloud/golang-proxmox-clusterctl-k8s/discussions)
+- **Issues**: [GitHub Issues](https://github.com/mevijays/pvekube/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/mevijays/pvekube/discussions)
 - **Security**: Report to security@ionos.com
 
 ---
