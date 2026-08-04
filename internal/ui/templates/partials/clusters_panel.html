@@ -8,24 +8,9 @@
 
   <div>
     <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Clusters</h2>
-    {{if .Clusters}}
-    <table class="w-full text-left text-sm">
-      <thead class="text-slate-500">
-        <tr><th class="pb-2 font-normal">Name</th><th class="pb-2 font-normal">Status</th><th class="pb-2 font-normal">Created</th></tr>
-      </thead>
-      <tbody>
-        {{range .Clusters}}
-        <tr class="border-t border-slate-800">
-          <td class="py-2 font-medium"><a href="/clusters/{{.Name}}" class="text-brand-500 hover:text-brand-400">{{.Name}}</a></td>
-          <td class="py-2 text-slate-400">{{.Status}}</td>
-          <td class="py-2 text-slate-400">{{.CreatedAt}}</td>
-        </tr>
-        {{end}}
-      </tbody>
-    </table>
-    {{else}}
-    <p class="text-sm text-slate-500">No clusters yet.</p>
-    {{end}}
+    <div hx-get="/clusters/list" hx-trigger="load" hx-swap="outerHTML">
+      <div class="flex items-center gap-2 text-sm text-slate-500"><i class="fa fa-spinner fa-spin"></i> Loading…</div>
+    </div>
   </div>
 
   {{if not .Templates}}
@@ -34,8 +19,20 @@
     No VM templates built yet. <a href="/templates" class="underline">Build one first</a> — a cluster clones from a template.
   </div>
   {{else}}
-  <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
-    <h2 class="mb-4 text-sm font-semibold uppercase tracking-wide text-slate-400">Launch a new cluster</h2>
+  <div id="cluster-create-toggle">
+    <button type="button" onclick="document.getElementById('cluster-create-toggle').classList.add('hidden'); document.getElementById('cluster-create-form').classList.remove('hidden');"
+            class="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-brand-700">
+      <i class="fa fa-plus mr-1.5"></i>Create cluster
+    </button>
+  </div>
+  <div id="cluster-create-form" class="hidden rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
+    <div class="mb-4 flex items-center justify-between">
+      <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-400">Launch a new cluster</h2>
+      <button type="button" onclick="document.getElementById('cluster-create-form').classList.add('hidden'); document.getElementById('cluster-create-toggle').classList.remove('hidden');"
+              class="text-sm text-slate-500 hover:text-slate-300">
+        <i class="fa fa-times mr-1"></i>Cancel
+      </button>
+    </div>
     <form id="cluster-form" class="space-y-6">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
 
@@ -70,6 +67,7 @@
             <option value="cilium">Cilium</option>
             <option value="calico">Calico</option>
           </select>
+          <p class="mt-1 text-xs text-slate-500">Cilium and Calico are installed automatically after apply — watch the job log. "None" leaves every node <span class="text-amber-400">NotReady</span> until you install a CNI yourself.</p>
         </div>
         <div>
           <label class="mb-1 block text-sm font-medium text-slate-300">Network bridge</label>
@@ -84,15 +82,15 @@
         <div class="grid gap-4 sm:grid-cols-4">
           <div>
             <label class="mb-1 block text-sm font-medium text-slate-300">CPU sockets</label>
-            <input type="number" name="num_sockets" value="2" min="1" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+            <input type="number" name="num_sockets" value="1" min="1" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
           </div>
           <div>
             <label class="mb-1 block text-sm font-medium text-slate-300">CPU cores</label>
-            <input type="number" name="num_cores" value="4" min="1" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+            <input type="number" name="num_cores" value="2" min="1" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
           </div>
           <div>
             <label class="mb-1 block text-sm font-medium text-slate-300">Memory (MiB)</label>
-            <input type="number" name="memory_mib" value="8048" min="512" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+            <input type="number" name="memory_mib" value="4096" min="512" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
           </div>
           <div>
             <label class="mb-1 block text-sm font-medium text-slate-300">Boot disk (GB)</label>
@@ -106,7 +104,7 @@
         <div class="grid gap-4 sm:grid-cols-2">
           <div>
             <label class="mb-1 block text-sm font-medium text-slate-300">Gateway</label>
-            <input type="text" name="gateway" placeholder="10.10.10.1" required class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+            <input type="text" name="gateway" value="172.16.1.1" placeholder="10.10.10.1" required class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
           </div>
           <div>
             <label class="mb-1 block text-sm font-medium text-slate-300">Subnet prefix</label>
@@ -122,7 +120,7 @@
           </div>
           <div>
             <label class="mb-1 block text-sm font-medium text-slate-300">DNS servers</label>
-            <input type="text" name="dns_servers" placeholder="8.8.8.8, 8.8.4.4" required class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+            <input type="text" name="dns_servers" value="172.16.1.1, 1.1.1.1" placeholder="8.8.8.8, 8.8.4.4" required class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
           </div>
           <div>
             <label class="mb-1 block text-sm font-medium text-slate-300">SSH public keys <span class="text-slate-500">(optional, comma-separated)</span></label>
@@ -144,15 +142,46 @@
         {{end}}
       </div>
 
+      <div>
+        <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Post-provision add-ons</h3>
+        <p class="mb-2 text-xs text-slate-500">Installed automatically after the cluster comes up — watch the job log for progress.</p>
+        <div class="space-y-2">
+          <label class="flex items-center gap-2 text-sm text-slate-300">
+            <input type="checkbox" name="install_metrics_server" value="1" class="rounded border-slate-700 bg-slate-950">
+            metrics-server <span class="text-slate-500">(powers <code>kubectl top</code>)</span>
+          </label>
+          <label class="flex items-center gap-2 text-sm text-slate-300">
+            <input type="checkbox" name="install_istio" value="1" class="rounded border-slate-700 bg-slate-950">
+            Istio service mesh <span class="text-slate-500">(default profile)</span>
+          </label>
+          <div>
+            <label class="flex items-center gap-2 text-sm text-slate-300">
+              <input type="checkbox" name="install_metallb" value="1" id="metallb-checkbox"
+                     onchange="document.getElementById('metallb-pool-field').classList.toggle('hidden', !this.checked)"
+                     class="rounded border-slate-700 bg-slate-950">
+              MetalLB <span class="text-slate-500">(bare-metal LoadBalancer support)</span>
+            </label>
+            <div id="metallb-pool-field" class="mt-2 hidden pl-6">
+              <label class="mb-1 block text-sm font-medium text-slate-300">MetalLB IP pool</label>
+              <input type="text" name="metallb_ip_pool" placeholder="10.10.10.90-10.10.10.99 or 10.10.10.80/28"
+                     class="w-full max-w-sm rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+              <p class="mt-1 text-xs text-slate-500">A range or CIDR outside your Node IP range above, on the same subnet — MetalLB hands these out to Services of type LoadBalancer.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div id="ip-plan-issues"></div>
       <div id="cluster-preview"></div>
 
       <div class="flex gap-3 pt-2">
         <button type="button" hx-post="/clusters/check-ip" hx-target="#ip-plan-issues" hx-swap="innerHTML" hx-include="#cluster-form"
+                data-loading-text="Checking network..."
                 class="rounded-lg border border-slate-700 px-4 py-2.5 text-sm font-semibold text-slate-200 hover:bg-slate-800">
           <i class="fa fa-map-signs mr-1.5"></i>Check IP plan
         </button>
         <button type="button" hx-post="/clusters/preview" hx-target="#cluster-preview" hx-swap="innerHTML" hx-include="#cluster-form"
+                data-loading-text="Generating manifest..."
                 class="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-brand-700">
           <i class="fa fa-file-code-o mr-1.5"></i>Preview manifest
         </button>

@@ -1,0 +1,27 @@
+{{define "clusters_list"}}
+<div id="clusters-list" hx-get="/clusters/list" hx-trigger="every 5s" hx-swap="outerHTML">
+  {{if .Clusters}}
+  <table class="w-full text-left text-sm">
+    <thead class="text-slate-500">
+      <tr><th class="pb-2 font-normal">Name</th><th class="pb-2 font-normal">Status</th><th class="pb-2 font-normal">Created</th><th class="pb-2 font-normal"></th></tr>
+    </thead>
+    <tbody>
+      {{range .Clusters}}
+      <tr class="border-t border-slate-800">
+        <td class="py-2 font-medium"><a href="/clusters/{{.Name}}" class="text-brand-500 hover:text-brand-400">{{.Name}}</a></td>
+        <td class="py-2 text-slate-400">{{.Status}}</td>
+        <td class="py-2 text-slate-400">{{.CreatedAt}}</td>
+        <td class="py-2 text-right">
+          <a href="/clusters/{{.Name}}/resources" class="rounded-lg border border-slate-700 px-2.5 py-1 text-xs text-slate-300 hover:bg-slate-800">
+            <i class="fa fa-th-large mr-1"></i>Resources
+          </a>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="text-sm text-slate-500">No clusters yet.</p>
+  {{end}}
+</div>
+{{end}}

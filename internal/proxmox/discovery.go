@@ -3,6 +3,7 @@ package proxmox
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"sort"
 )
 
@@ -187,6 +188,18 @@ func (c *Client) nextVMID(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("parsing nextid %q: %w", idStr, err)
 	}
 	return id, nil
+}
+
+// DeleteVM deletes a VM or template by VMID (DELETE /nodes/{node}/qemu/{vmid})
+// and waits for the deletion task to finish. Used by the template builder to
+// let an operator remove a template they no longer need directly from
+// PVEKube instead of going to the Proxmox UI.
+func (c *Client) DeleteVM(ctx context.Context, node string, vmid int) error {
+	var upid string
+	if err := c.do(ctx, http.MethodDelete, fmt.Sprintf("/nodes/%s/qemu/%d", node, vmid), nil, &upid); err != nil {
+		return err
+	}
+	return c.WaitTask(ctx, node, upid, nil)
 }
 
 func splitCSV(s string) []string {

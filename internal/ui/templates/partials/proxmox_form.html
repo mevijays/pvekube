@@ -32,10 +32,26 @@
     <details class="rounded-lg border border-slate-800 bg-slate-950/50 px-3 py-2">
       <summary class="cursor-pointer text-sm text-slate-300">Don't have a token yet? Copy these commands.</summary>
       <pre class="mt-2 overflow-x-auto rounded-lg bg-black/50 p-3 font-mono text-xs text-slate-300">pveum user add capmox@pve --comment 'PVEKube service account'
-pveum aclmod / -user capmox@pve -role PVEVMAdmin
-pveum aclmod / -user capmox@pve -role PVEAuditor
+pveum acl modify / -user capmox@pve -role PVEVMAdmin
+pveum acl modify / -user capmox@pve -role PVEDatastoreAdmin
+pveum acl modify / -user capmox@pve -role PVEAuditor
+pveum acl modify /sdn -user capmox@pve -role PVEAdmin
 pveum user token add capmox@pve capi -privsep 0</pre>
       <p class="mt-2 text-xs text-slate-500">Run these on the Proxmox host (as root). The last command prints the token secret — copy it, it's shown only once.</p>
+      <p class="mt-2 text-xs text-slate-500">
+        <strong class="text-slate-400">Why each role:</strong>
+        PVEVMAdmin covers VM lifecycle (create/clone/config/power), but <em>not</em> disk allocation —
+        that's PVEDatastoreAdmin (missing it fails VM creation with "Datastore.AllocateSpace" denied).
+        PVEAuditor lets PVEKube list nodes/storage/bridges to populate its dropdowns.
+        The <code>/sdn</code> grant covers SDN.Use, required on Proxmox 8.x/9.x installs using SDN zones
+        (missing it fails VM creation with "SDN.Use" denied on the bridge's zone).
+      </p>
+      <p class="mt-2 text-xs text-amber-400">
+        <i class="fa fa-info-circle mr-1"></i>
+        <code>-privsep 0</code> means the token automatically inherits every grant given to the user above.
+        If you create the token with privilege separation ON instead, repeat all four <code>acl modify</code>
+        commands with <code>-token 'capmox@pve!capi'</code> in place of <code>-user capmox@pve</code>.
+      </p>
     </details>
 
     <button type="submit" class="w-full rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-brand-700">

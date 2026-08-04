@@ -125,12 +125,100 @@ df -h
 - `invalid option` → Docker ENTRYPOINT issue (already fixed in this version)
 - `PROXMOX_URL missing scheme` → Ensure URL is normalized
 - `403 Forbidden` → Proxmox permissions issue
+- `permission denied` writing into `/home/imagebuilder/...` → mounted directory ownership issue (already fixed — PVEKube chmods the bind-mounted repo/ISO-cache directories world-writable before every `docker run`, since the container's `imagebuilder` user doesn't match the host UID)
 
 **Solutions**:
 - ✅ Verify Proxmox connection details in form
 - ✅ Ensure template VMID is correct
 - ✅ Check Proxmox token permissions
 - ✅ Verify storage pool exists and has space
+
+### Build Fails: "write: broken pipe" Uploading the ISO
+
+**Symptom**: Packer downloads the installer ISO successfully, then fails uploading it to Proxmox:
+```
+Post "https://<proxmox>:8006/api2/json/nodes/<node>/storage/<pool>/upload": write tcp ...: write: broken pipe
+```
+
+**Cause**: Packer's default flow downloads the ISO into the container, then re-uploads it to Proxmox over the REST API — multi-GB uploads over that path are prone to timing out or dropping, especially on slower or less stable links.
+
+**Fix (built in)**: PVEKube pre-stages Ubuntu ISOs directly on Proxmox before every validate/build, sidestepping the client-side upload entirely:
+- If the ISO is already present in the selected ISO storage pool, PVEKube skips the download/upload completely and points Packer at it via image-builder's `ISO_FILE` mechanism.
+- If it isn't present, PVEKube asks **Proxmox itself** to fetch it (via Proxmox's `download-url` API) — the transfer happens server-side on Proxmox, never crossing the PVEKube-host↔Proxmox link that was dropping the connection.
+
+This only applies to Ubuntu flavors (22.04/24.04/26.04, ± EFI) — Flatcar and Rocky Linux's upstream image-builder configs don't support `ISO_FILE` pre-staging, so those still go through the normal download+upload path.
+
+If you still see this error on an Ubuntu flavor, check the job log for a step titled **"Stage installer ISO on Proxmox"** — it logs exactly which path was taken (already present / downloading server-side / unsupported flavor).
+
+### Build Fails: "one of iso_file, iso_url... must be specified"
+
+**Symptom**: Validate or build fails immediately with:
+```
+Error: Failed to prepare build
+one of iso_file, iso_url, or a combination of cd_files and cd_content must be specified for boot_iso
+```
+
+**Cause**: image-builder's Proxmox Packer builder rejects the config when **both** `iso_file` and `iso_url` are set (it doesn't silently prefer one) — and the per-flavor config always sets a real `iso_url` by default. PVEKube handles this automatically by writing a small override var-file (`.pvekube-iso-override.json`, containing `{"iso_url": ""}`) into the image-builder checkout and passing it via the Makefile's `PACKER_VAR_FILES` hook — the only override point applied *after* the flavor's own config, so it actually takes effect. You shouldn't see this error in a current build; if you do, check that `.pvekube-iso-override.json` exists under `~/pvekube-data/image-builder/images/capi/`.
+
+### Build Fails: "unsupported format 'qcow2'"
+
+**Symptom**: VM creation fails with:
+```
+unable to create VM <vmid> - unsupported format 'qcow2' at .../LvmThinPlugin.pm line ...
+```
+
+**Cause**: LVM-thin and ZFS storage pools don't support `qcow2` disk images — only `raw`. PVEKube's discovery scan already detects this per pool (shown in the storage pools table on the Proxmox tab), and passes the correct format through to Packer automatically as of this version. If you still see this, the storage pool you picked for the build may not match what discovery reported — refresh the Proxmox tab and re-check the "Disk format" column for your pool.
+
+### Build Hangs Forever at the Installer's Language-Selection Screen
+
+**Symptom**: The Proxmox console for the build VM shows Ubuntu's interactive installer sitting on its "select your language" screen and never progresses, while PVEKube's job log sits at `Waiting for SSH to become available...` for a very long time (Packer's own timeout for this is 2 hours — it will not fail on its own quickly).
+
+**Cause**: This means the VM booted, but the unattended `autoinstall` never actually kicked in — it fell back to the normal interactive installer. There are three distinct root causes that all produce this exact symptom, so check each in order:
+
+1. **DHCP isn't available on the network the build VM boots into.** The VM needs an IPv4 address to call back to PVEKube's host for the autoinstall config. Confirm from Proxmox:
+   ```bash
+   qm config <vmid> | grep net0        # note the MAC
+   ip neigh | grep <mac>               # look for an IPv4 (not just IPv6 link-local) entry
+   ```
+   If there's no IPv4 entry, the bridge/VLAN the build uses needs a working DHCP server.
+
+2. **Proxmox's datacenter-wide firewall is silently dropping the callback.** PVEKube now checks this automatically — go to the **Proxmox tab → Permissions** section and look for "Datacenter firewall not silently blocking builds". If it reports the firewall is enabled, either fix the rule set to cover your actual build subnet, or disable it:
+   ```bash
+   pvesh set /cluster/firewall/options --enable 0
+   ```
+   This one is nasty because it produces *zero* error anywhere — no 403, no denied-connection message — the packet is just gone.
+
+3. **A GRUB boot-timing race** — Packer's typed boot command (which injects the `autoinstall` kernel parameter) can land after GRUB has already auto-booted into its default entry, especially on Proxmox's noVNC console versus more direct hypervisor keyboard injection. PVEKube already sets a generous `boot_wait` for this, but it's a timing heuristic, not a guarantee — if you rule out #1 and #2 and it's still landing on this screen, retry once; if it recurs consistently, it points at something console-injection-specific to your host rather than a one-off race.
+
+**If you need to stop a hung build**: use the **Cancel** button on the build's progress panel (added in this version) rather than waiting out the 2-hour timeout — it sends a graceful stop to the underlying Docker container so the orphaned build VM gets cleaned up too, instead of leaving both hanging.
+
+### Build Fails: "Permission check failed" (403) on VM Creation
+
+**Symptom**: VM creation fails partway through with a 403, e.g.:
+```
+Permission check failed (/storage/<pool>, Datastore.AllocateSpace)
+Permission check failed (/sdn/zones/<zone>/<bridge>, SDN.Use)
+```
+
+**Cause**: The Proxmox API token is missing a specific privilege that a broad-sounding role doesn't actually cover:
+- **`PVEVMAdmin` does NOT include `Datastore.AllocateSpace`** — it's VM-lifecycle-only (create/clone/config/power). Disk allocation needs `PVEDatastoreAdmin` too.
+- **`SDN.Use`** is required to attach a VM to a network bridge on Proxmox 8.x/9.x installs that use SDN zones (the default on newer installs) — a separate grant on the `/sdn` path.
+
+**Fix**: On the Proxmox tab's **Permissions** section, expand "Template builds or cluster launches failing with a 403? Run the full readiness script" — it prints the exact `pveum acl modify` commands for your configured token. Or run directly on the Proxmox host (as root), substituting your token's user:
+```bash
+pveum acl modify / -user capmox@pve -role PVEVMAdmin
+pveum acl modify / -user capmox@pve -role PVEDatastoreAdmin
+pveum acl modify / -user capmox@pve -role PVEAuditor
+pveum acl modify /sdn -user capmox@pve -role PVEAdmin
+```
+
+**If that doesn't fix it**: check whether the token has privilege separation (privsep) enabled — grants on the *user* don't reach the token when privsep is on:
+```bash
+pveum user token list capmox@pve   # look at the "privsep" column
+```
+If `privsep` shows `1`, repeat the four commands above with `-token 'capmox@pve!capi'` instead of `-user capmox@pve`.
+
+See **[Installation → Proxmox API Token Setup](installation/#proxmox-api-token-setup)** for the complete, correct set of grants to use from the start.
 
 ### Template Build Timeout
 

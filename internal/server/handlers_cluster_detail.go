@@ -107,7 +107,13 @@ func (s *Server) handleClusterDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	name := r.PathValue("name")
 	s.db.Exec(`UPDATE clusters SET status = 'deleting' WHERE name = ?`, name)
-	s.runLifecycleJob(w, name, capi.DeleteClusterSpec(s.dataDir, s.binDir, name))
+
+	spec := capi.DeleteClusterSpec(s.dataDir, s.binDir, name)
+	spec.Step("Remove local record", func(c *jobs.Ctx) error {
+		_, err := s.db.Exec(`DELETE FROM clusters WHERE name = ?`, name)
+		return err
+	})
+	s.runLifecycleJob(w, name, spec)
 }
 
 func (s *Server) handleClusterKubeconfig(w http.ResponseWriter, r *http.Request) {

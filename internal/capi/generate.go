@@ -10,6 +10,8 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,6 +22,7 @@ import (
 	"pvekube/internal/ipplan"
 	"pvekube/internal/jobs"
 	"pvekube/internal/runner"
+	"pvekube/internal/versions"
 )
 
 // CNIFlavor selects which cluster-template-*.yaml clusterctl renders.
@@ -259,11 +262,110 @@ func ApplyStep(dataDir, binDir, manifestYAML string) func(*jobs.Ctx) error {
 	}
 }
 
+// EnsureCNIStep makes the selected CNI actually get installed onto the
+// workload cluster — the one piece clusterctl's generated manifest never
+// does on its own for either flavor PVEKube offers.
+//
+// Calico: CAPMOX's "calico" flavor manifest includes a ClusterResourceSet
+// that references a ConfigMap named "calico" in the "default" namespace, but
+// never defines that ConfigMap — see CalicoManifestURL's doc comment for the
+// full story. Without this, the cluster applies "successfully", every VM
+// boots and joins fine, but every node sits at NotReady forever (kubelet:
+// "cni plugin not initialized") with nothing hinting why — confirmed by
+// hitting exactly this live. The ConfigMap name is fixed (not per-cluster)
+// and namespace is always "default", matching CAPMOX's template — so it's a
+// shared, idempotent resource: the first cluster that needs it creates it,
+// every later calico-flavored cluster reuses it by name.
+//
+// Cilium: has no equivalent ClusterResourceSet/ConfigMap path — recent
+// releases dropped the plain-YAML "quick-install.yaml" install option in
+// favor of Helm-only, so this waits for the workload cluster's API to become
+// reachable (its kubeconfig Secret only exists once CAPI has that far) and
+// then runs `cilium install` via cilium-cli, which drives the Helm install
+// internally without needing a separate system Helm binary.
+func EnsureCNIStep(dataDir, binDir, clusterName string, cni CNIFlavor) func(*jobs.Ctx) error {
+	return func(c *jobs.Ctx) error {
+		switch cni {
+		case CNIDefault:
+			return nil
+		case CNICilium:
+			return installCilium(c, dataDir, binDir, clusterName)
+		case CNICalico:
+			kubectlBin := filepath.Join(binDir, "kubectl")
+			kcPath := bootstrap.KubeconfigPath(dataDir)
+
+			checkCmd := exec.Command(kubectlBin, "--kubeconfig", kcPath, "get", "configmap", "calico", "-n", "default")
+			if err := checkCmd.Run(); err == nil {
+				c.Logf("ConfigMap calico already exists in the management cluster — reused by every calico-flavored cluster, nothing to do")
+				return nil
+			}
+
+			c.Logf("Fetching Calico install manifest: %s", versions.CalicoManifestURL)
+			req, err := http.NewRequestWithContext(c, http.MethodGet, versions.CalicoManifestURL, nil)
+			if err != nil {
+				return err
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				return fmt.Errorf("fetching Calico manifest: %w", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				return fmt.Errorf("fetching Calico manifest: HTTP %d", resp.StatusCode)
+			}
+			manifest, err := io.ReadAll(resp.Body)
+			if err != nil {
+				return fmt.Errorf("reading Calico manifest: %w", err)
+			}
+
+			f, err := os.CreateTemp(dataDir, "calico-manifest-*.yaml")
+			if err != nil {
+				return err
+			}
+			defer os.Remove(f.Name())
+			if _, err := f.Write(manifest); err != nil {
+				f.Close()
+				return err
+			}
+			f.Close()
+
+			if err := runner.Run(c, c, "", nil, kubectlBin, "--kubeconfig", kcPath, "create", "configmap", "calico",
+				"--from-file=calico.yaml="+f.Name(), "-n", "default"); err != nil {
+				return fmt.Errorf("creating calico ConfigMap: %w", err)
+			}
+			c.Logf("ConfigMap calico created — the ClusterResourceSet will apply it to the workload cluster automatically")
+			return nil
+		default:
+			return nil
+		}
+	}
+}
+
+// installCilium waits for the workload cluster's API to become reachable
+// (see waitForWorkloadKubeconfig) then runs cilium-cli's install, which
+// itself waits for Cilium's own pods to come up before returning.
+func installCilium(c *jobs.Ctx, dataDir, binDir, clusterName string) error {
+	kcPath, cleanup, err := waitForWorkloadKubeconfig(c, dataDir, binDir, clusterName, "installing Cilium")
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	c.Logf("Control plane reachable — installing Cilium via cilium-cli")
+	ciliumBin := filepath.Join(binDir, "cilium")
+	return runner.Run(c, c, "", nil, ciliumBin, "install", "--kubeconfig", kcPath)
+}
+
 // ApplySpec wraps ApplyStep as a job, for the standard job-engine/SSE-progress
 // UI pattern used everywhere else in PVEKube. Proxmox credentials are
 // re-synced to the management cluster first — see EnsureCredentialsStep.
-func ApplySpec(clusterName, dataDir, binDir, proxmoxURL, tokenID, secret, manifestYAML string) *jobs.Spec {
-	return jobs.NewSpec("cluster.apply", "Apply cluster "+clusterName).
+// Any selected post-provision addons (metrics-server, Istio, MetalLB) are
+// installed last, after CNI, so they land on a cluster that already has pod
+// networking.
+func ApplySpec(clusterName, dataDir, binDir, proxmoxURL, tokenID, secret, manifestYAML string, cni CNIFlavor, addons AddonSelection) *jobs.Spec {
+	spec := jobs.NewSpec("cluster.apply", "Apply cluster "+clusterName).
 		Step("Sync Proxmox credentials", EnsureCredentialsStep(dataDir, binDir, proxmoxURL, tokenID, secret)).
-		Step("kubectl apply", ApplyStep(dataDir, binDir, manifestYAML))
+		Step("kubectl apply", ApplyStep(dataDir, binDir, manifestYAML)).
+		Step("Install CNI", EnsureCNIStep(dataDir, binDir, clusterName, cni))
+	return AddonSteps(spec, dataDir, binDir, clusterName, addons)
 }

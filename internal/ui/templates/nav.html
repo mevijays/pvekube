@@ -20,7 +20,10 @@
       <a href="/clusters" class="rounded-md px-3 py-1.5 text-slate-300 hover:bg-slate-800 hover:text-white">
         <i class="fa fa-sitemap mr-1.5"></i>Clusters
       </a>
-      <form method="post" action="/logout" class="ml-2">
+      <button type="button" id="theme-toggle" class="ml-2 rounded-md px-3 py-1.5 text-slate-400 hover:bg-slate-800 hover:text-white" title="Toggle light/dark theme">
+        <i id="theme-toggle-icon" class="fa fa-moon-o"></i>
+      </button>
+      <form method="post" action="/logout" class="ml-1">
         <input type="hidden" name="csrf" value="{{.CSRF}}">
         <button class="rounded-md px-3 py-1.5 text-slate-400 hover:bg-slate-800 hover:text-white" title="Sign out">
           <i class="fa fa-sign-out"></i>

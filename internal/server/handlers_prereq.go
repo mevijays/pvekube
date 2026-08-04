@@ -70,6 +70,21 @@ func (s *Server) handlePrereqsFix(w http.ResponseWriter, r *http.Request) {
 	ui.RenderPartial(w, "job_progress", map[string]any{"JobID": jobID, "Title": spec.Title})
 }
 
+// handleJobCancel cancels a running job. Session-authenticated only (not
+// CSRF-checked against the job_progress panel's own token) since the panel
+// doesn't carry one — acceptable because it can only ever cancel a job the
+// authenticated session already started or can see the ID of.
+func (s *Server) handleJobCancel(w http.ResponseWriter, r *http.Request) {
+	idStr := r.PathValue("id")
+	jobID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		http.Error(w, "bad job id", http.StatusBadRequest)
+		return
+	}
+	s.jobs.Cancel(jobID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // handleJobStream is a Server-Sent Events endpoint. It first replays every
 // persisted log line from disk (so a browser that connects after the job
 // already produced output — e.g. a refresh mid-build — still sees it all),
@@ -98,9 +113,25 @@ func (s *Server) handleJobStream(w http.ResponseWriter, r *http.Request) {
 
 	writeEvent(w, flusher, "connected")
 
+	// Replay persisted log lines for all job steps.
+	rows, _ := s.db.Query(`SELECT step_index, log_path FROM job_steps WHERE job_id = ? ORDER BY step_index`, jobID)
+	if rows != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var stepIdx int
+			var logPath string
+			if rows.Scan(&stepIdx, &logPath) == nil && logPath != "" {
+				lines, _ := jobs.ReadAllLines(logPath)
+				for _, line := range lines {
+					writeEvent(w, flusher, "LINE:"+line)
+				}
+			}
+		}
+	}
+
 	status, err := s.jobStatus(jobID)
 	if err == nil && status != string(jobs.StatusRunning) && status != string(jobs.StatusPending) {
-		// Already finished before we subscribed: just report the final status.
+		// Already finished: report the final status.
 		writeEvent(w, flusher, "JOB:"+status)
 		return
 	}

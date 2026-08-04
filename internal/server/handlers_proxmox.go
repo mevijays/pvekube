@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"pvekube/internal/proxmox"
@@ -21,6 +22,15 @@ type storedConnection struct {
 	TokenID     string
 	SecretSeal  []byte
 	InsecureTLS bool
+}
+
+// TokenUser returns the "user@realm" portion of TokenID (stripping
+// "!tokenname"), for rendering copy-paste-ready pveum commands in the UI.
+func (c *storedConnection) TokenUser() string {
+	if idx := strings.Index(c.TokenID, "!"); idx >= 0 {
+		return c.TokenID[:idx]
+	}
+	return c.TokenID
 }
 
 func (s *Server) getConnection() (*storedConnection, error) {

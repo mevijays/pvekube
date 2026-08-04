@@ -1,0 +1,395 @@
+{{define "title"}}Resources · {{.ClusterName}} · PVEKube{{end}}
+{{define "body"}}
+{{template "nav" .}}
+<!-- Pinned to 32.3.3, the last major version before AG Grid replaced its
+     CSS-file themes with a new JS Theming API in v33 — the latest CDN
+     version silently drops color theming when you use the old ag-theme-*
+     CSS classes (structural styles still apply, so it half-works and looks
+     broken rather than erroring loudly). This version's classic themes are
+     well-documented and stable. -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@32.3.3/styles/ag-grid.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ag-grid-community@32.3.3/styles/ag-theme-quartz.css">
+<script src="https://cdn.jsdelivr.net/npm/ag-grid-community@32.3.3/dist/ag-grid-community.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<div class="mx-auto max-w-7xl px-4 py-10">
+  <div class="mb-6 flex items-center justify-between">
+    <div>
+      <h1 class="text-2xl font-semibold text-white">Resources — <span class="text-brand-500">{{.ClusterName}}</span></h1>
+      <p class="mt-1 text-slate-400">Live view of everything running in this cluster.</p>
+    </div>
+    <div class="flex items-center gap-2">
+      <button id="refresh-btn" class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-800">
+        <i class="fa fa-refresh mr-1.5"></i>Refresh
+      </button>
+      <a href="/clusters/{{.ClusterName}}" class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-800">
+        <i class="fa fa-arrow-left mr-1.5"></i>Back to cluster
+      </a>
+    </div>
+  </div>
+
+  <div id="load-error" class="mb-6 hidden rounded-xl border border-red-900 bg-red-950/50 px-4 py-3 text-sm text-red-300"></div>
+  <div id="loading" class="flex items-center gap-2 text-sm text-slate-500"><i class="fa fa-spinner fa-spin"></i> Loading cluster resources…</div>
+
+  <div id="content" class="hidden space-y-6">
+    <!-- Ribbon: stat tiles -->
+    <div id="ribbon" class="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-6"></div>
+
+    <!-- Charts -->
+    <div class="grid gap-4 sm:grid-cols-2">
+      <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+        <h3 class="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">CPU (cores)</h3>
+        <canvas id="cpu-chart" height="140"></canvas>
+      </div>
+      <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+        <h3 class="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Memory (GiB)</h3>
+        <canvas id="mem-chart" height="140"></canvas>
+      </div>
+    </div>
+    <p id="metrics-note" class="hidden text-xs text-amber-400"><i class="fa fa-info-circle mr-1"></i>metrics-server isn't installed on this cluster — showing requests/limits only, no live usage. Check the "metrics-server" add-on when creating a cluster to get usage data.</p>
+
+    <!-- Filters -->
+    <div class="flex flex-wrap items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/60 p-4">
+      <div>
+        <label class="mb-1 block text-xs font-medium text-slate-400">Namespace</label>
+        <select id="ns-filter" class="rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-sm text-white">
+          <option value="">All namespaces</option>
+        </select>
+      </div>
+      <div class="flex-1">
+        <label class="mb-1 block text-xs font-medium text-slate-400">Filter by name</label>
+        <input id="text-filter" type="text" placeholder="Type to filter the active table..."
+               class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-1.5 text-sm text-white">
+      </div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="flex flex-wrap gap-1 border-b border-slate-800" id="tabs"></div>
+    <div id="grid-container" style="height: 560px; width: 100%;"></div>
+  </div>
+</div>
+
+<script>
+(function() {
+  var clusterName = {{.ClusterName}};
+  var view = null;
+  var grid = null;
+  var activeKind = 'pods';
+
+  var KIND_LABELS = {
+    deployments: 'Deployments', statefulsets: 'StatefulSets', daemonsets: 'DaemonSets', pods: 'Pods',
+    configmaps: 'ConfigMaps', secrets: 'Secrets', persistentvolumeclaims: 'PVCs',
+    persistentvolumes: 'PVs', storageclasses: 'StorageClasses'
+  };
+  var KIND_ICONS = {
+    deployments: 'fa-cubes', statefulsets: 'fa-database', daemonsets: 'fa-server', pods: 'fa-th-large',
+    configmaps: 'fa-file-text-o', secrets: 'fa-key', persistentvolumeclaims: 'fa-hdd-o',
+    persistentvolumes: 'fa-hdd-o', storageclasses: 'fa-sitemap'
+  };
+  var KIND_ORDER = ['pods', 'deployments', 'statefulsets', 'daemonsets', 'configmaps', 'secrets', 'persistentvolumeclaims', 'persistentvolumes', 'storageclasses'];
+
+  function fmtAge(ts) {
+    if (!ts) return '';
+    var d = new Date(ts);
+    var secs = Math.floor((Date.now() - d.getTime()) / 1000);
+    if (secs < 60) return secs + 's';
+    var mins = Math.floor(secs / 60);
+    if (mins < 60) return mins + 'm';
+    var hours = Math.floor(mins / 60);
+    if (hours < 24) return hours + 'h';
+    return Math.floor(hours / 24) + 'd';
+  }
+  function fmtCPU(m) {
+    if (m === undefined || m === null) return '—';
+    if (m === 0) return '0';
+    if (m % 1000 === 0) return (m / 1000) + '';
+    return m + 'm';
+  }
+  function fmtMemKi(ki) {
+    if (ki === undefined || ki === null) return '—';
+    if (ki === 0) return '0';
+    var mi = ki / 1024;
+    if (mi < 1024) return Math.round(mi) + 'Mi';
+    return (mi / 1024).toFixed(1) + 'Gi';
+  }
+  function ns(item) { return (item.metadata && item.metadata.namespace) || ''; }
+  function nm(item) { return (item.metadata && item.metadata.name) || ''; }
+
+  function textOf(v) { return v === undefined || v === null ? '' : String(v); }
+
+  var COLUMN_BUILDERS = {
+    pods: function() {
+      return [
+        {headerName: 'Name', field: 'metadata.name', flex: 2},
+        {headerName: 'Namespace', field: 'metadata.namespace', flex: 1},
+        {headerName: 'Status', valueGetter: function(p) { return textOf(p.data.status && p.data.status.phase); }, flex: 1},
+        {headerName: 'Node', valueGetter: function(p) { return textOf(p.data.spec && p.data.spec.nodeName); }, flex: 1},
+        {headerName: 'CPU req', valueGetter: function(p) { return fmtCPU(p.data._cpuRequestM); }, width: 100},
+        {headerName: 'Mem req', valueGetter: function(p) { return fmtMemKi(p.data._memRequestKi); }, width: 100},
+        {headerName: 'CPU limit', valueGetter: function(p) { return fmtCPU(p.data._cpuLimitM); }, width: 100},
+        {headerName: 'Mem limit', valueGetter: function(p) { return fmtMemKi(p.data._memLimitKi); }, width: 100},
+        {headerName: 'CPU used', valueGetter: function(p) { return fmtCPU(p.data._cpuUsageM); }, width: 100},
+        {headerName: 'Mem used', valueGetter: function(p) { return fmtMemKi(p.data._memUsageKi); }, width: 100},
+        {headerName: 'Age', valueGetter: function(p) { return fmtAge(p.data.metadata && p.data.metadata.creationTimestamp); }, width: 80},
+      ];
+    },
+    deployments: function() {
+      return [
+        {headerName: 'Name', field: 'metadata.name', flex: 2},
+        {headerName: 'Namespace', field: 'metadata.namespace', flex: 1},
+        {headerName: 'Desired', valueGetter: function(p) { return textOf(p.data.spec && p.data.spec.replicas); }, width: 100},
+        {headerName: 'Ready', valueGetter: function(p) { return textOf(p.data.status && p.data.status.readyReplicas || 0); }, width: 100},
+        {headerName: 'Up-to-date', valueGetter: function(p) { return textOf(p.data.status && p.data.status.updatedReplicas || 0); }, width: 110},
+        {headerName: 'Available', valueGetter: function(p) { return textOf(p.data.status && p.data.status.availableReplicas || 0); }, width: 110},
+        {headerName: 'Age', valueGetter: function(p) { return fmtAge(p.data.metadata && p.data.metadata.creationTimestamp); }, width: 90},
+      ];
+    },
+    statefulsets: function() {
+      return [
+        {headerName: 'Name', field: 'metadata.name', flex: 2},
+        {headerName: 'Namespace', field: 'metadata.namespace', flex: 1},
+        {headerName: 'Desired', valueGetter: function(p) { return textOf(p.data.spec && p.data.spec.replicas); }, width: 100},
+        {headerName: 'Ready', valueGetter: function(p) { return textOf(p.data.status && p.data.status.readyReplicas || 0); }, width: 100},
+        {headerName: 'Age', valueGetter: function(p) { return fmtAge(p.data.metadata && p.data.metadata.creationTimestamp); }, width: 90},
+      ];
+    },
+    daemonsets: function() {
+      return [
+        {headerName: 'Name', field: 'metadata.name', flex: 2},
+        {headerName: 'Namespace', field: 'metadata.namespace', flex: 1},
+        {headerName: 'Desired', valueGetter: function(p) { return textOf(p.data.status && p.data.status.desiredNumberScheduled); }, width: 100},
+        {headerName: 'Current', valueGetter: function(p) { return textOf(p.data.status && p.data.status.currentNumberScheduled); }, width: 100},
+        {headerName: 'Ready', valueGetter: function(p) { return textOf(p.data.status && p.data.status.numberReady); }, width: 100},
+        {headerName: 'Age', valueGetter: function(p) { return fmtAge(p.data.metadata && p.data.metadata.creationTimestamp); }, width: 90},
+      ];
+    },
+    configmaps: function() {
+      return [
+        {headerName: 'Name', field: 'metadata.name', flex: 2},
+        {headerName: 'Namespace', field: 'metadata.namespace', flex: 1},
+        {headerName: 'Data keys', valueGetter: function(p) { return Object.keys(p.data.data || {}).length; }, width: 110},
+        {headerName: 'Age', valueGetter: function(p) { return fmtAge(p.data.metadata && p.data.metadata.creationTimestamp); }, width: 90},
+      ];
+    },
+    secrets: function() {
+      return [
+        {headerName: 'Name', field: 'metadata.name', flex: 2},
+        {headerName: 'Namespace', field: 'metadata.namespace', flex: 1},
+        {headerName: 'Type', field: 'type', flex: 1},
+        {headerName: 'Keys', valueGetter: function(p) { return Object.keys(p.data.data || {}).length; }, width: 90},
+        {headerName: 'Age', valueGetter: function(p) { return fmtAge(p.data.metadata && p.data.metadata.creationTimestamp); }, width: 90},
+      ];
+    },
+    persistentvolumeclaims: function() {
+      return [
+        {headerName: 'Name', field: 'metadata.name', flex: 2},
+        {headerName: 'Namespace', field: 'metadata.namespace', flex: 1},
+        {headerName: 'Status', valueGetter: function(p) { return textOf(p.data.status && p.data.status.phase); }, width: 100},
+        {headerName: 'Volume', valueGetter: function(p) { return textOf(p.data.spec && p.data.spec.volumeName); }, flex: 1},
+        {headerName: 'Capacity', valueGetter: function(p) { return textOf(p.data.status && p.data.status.capacity && p.data.status.capacity.storage); }, width: 100},
+        {headerName: 'StorageClass', valueGetter: function(p) { return textOf(p.data.spec && p.data.spec.storageClassName); }, width: 130},
+        {headerName: 'Age', valueGetter: function(p) { return fmtAge(p.data.metadata && p.data.metadata.creationTimestamp); }, width: 90},
+      ];
+    },
+    persistentvolumes: function() {
+      return [
+        {headerName: 'Name', field: 'metadata.name', flex: 2},
+        {headerName: 'Capacity', valueGetter: function(p) { return textOf(p.data.spec && p.data.spec.capacity && p.data.spec.capacity.storage); }, width: 100},
+        {headerName: 'Status', valueGetter: function(p) { return textOf(p.data.status && p.data.status.phase); }, width: 100},
+        {headerName: 'Claim', valueGetter: function(p) { var c = p.data.spec && p.data.spec.claimRef; return c ? (c.namespace + '/' + c.name) : ''; }, flex: 1},
+        {headerName: 'StorageClass', valueGetter: function(p) { return textOf(p.data.spec && p.data.spec.storageClassName); }, width: 130},
+        {headerName: 'Age', valueGetter: function(p) { return fmtAge(p.data.metadata && p.data.metadata.creationTimestamp); }, width: 90},
+      ];
+    },
+    storageclasses: function() {
+      return [
+        {headerName: 'Name', field: 'metadata.name', flex: 2},
+        {headerName: 'Provisioner', field: 'provisioner', flex: 1},
+        {headerName: 'Reclaim policy', field: 'reclaimPolicy', width: 130},
+        {headerName: 'Volume binding', field: 'volumeBindingMode', width: 140},
+        {headerName: 'Age', valueGetter: function(p) { return fmtAge(p.data.metadata && p.data.metadata.creationTimestamp); }, width: 90},
+      ];
+    },
+  };
+
+  function filteredItems(kind) {
+    var items = (view.resources && view.resources[kind]) || [];
+    var nsVal = document.getElementById('ns-filter').value;
+    var textVal = document.getElementById('text-filter').value.toLowerCase();
+    return items.filter(function(it) {
+      if (nsVal && ns(it) !== nsVal) return false;
+      if (textVal && nm(it).toLowerCase().indexOf(textVal) === -1) return false;
+      return true;
+    });
+  }
+
+  function renderTabs() {
+    var tabsEl = document.getElementById('tabs');
+    tabsEl.innerHTML = '';
+    KIND_ORDER.forEach(function(kind) {
+      var count = (view.resources && view.resources[kind] || []).length;
+      var btn = document.createElement('button');
+      btn.className = 'px-4 py-2 text-sm font-medium border-b-2 -mb-px ' +
+        (kind === activeKind ? 'border-brand-500 text-white' : 'border-transparent text-slate-400 hover:text-slate-200');
+      btn.innerHTML = '<i class="fa ' + KIND_ICONS[kind] + ' mr-1.5"></i>' + KIND_LABELS[kind] + ' <span class="text-slate-500">(' + count + ')</span>';
+      btn.onclick = function() { activeKind = kind; renderTabs(); renderGrid(); };
+      tabsEl.appendChild(btn);
+    });
+  }
+
+  function isDark() { return document.documentElement.getAttribute('data-theme') !== 'light'; }
+
+  function renderGrid() {
+    var container = document.getElementById('grid-container');
+    container.className = isDark() ? 'ag-theme-quartz-dark' : 'ag-theme-quartz';
+    container.innerHTML = '';
+    var cols = COLUMN_BUILDERS[activeKind]();
+    var rows = filteredItems(activeKind);
+    grid = agGrid.createGrid(container, {
+      columnDefs: cols,
+      rowData: rows,
+      defaultColDef: {sortable: true, resizable: true, filter: true},
+      animateRows: false,
+    });
+  }
+
+  function statTile(icon, label, value) {
+    return '<div class="rounded-xl border border-slate-800 bg-slate-900/60 p-3">' +
+      '<div class="flex items-center gap-2 text-slate-500"><i class="fa ' + icon + '"></i><span class="text-xs uppercase tracking-wide">' + label + '</span></div>' +
+      '<div class="mt-1 text-xl font-semibold text-white">' + value + '</div></div>';
+  }
+
+  function renderRibbon() {
+    var ribbon = document.getElementById('ribbon');
+    var html = '';
+    html += statTile('fa-server', 'Nodes', view.nodes.length);
+    html += statTile('fa-folder-o', 'Namespaces', view.namespaces.length);
+    KIND_ORDER.forEach(function(kind) {
+      html += statTile(KIND_ICONS[kind], KIND_LABELS[kind], (view.resources[kind] || []).length);
+    });
+    ribbon.innerHTML = html;
+  }
+
+  var cpuChart, memChart;
+  function computeTotals() {
+    var nsVal = document.getElementById('ns-filter').value;
+    var nodes = view.nodes;
+    var cpuCap = 0, memCap = 0, cpuAlloc = 0, memAlloc = 0, cpuUsage = 0, memUsage = 0;
+    var haveUsage = view.metricsAvailable;
+    if (!nsVal) {
+      nodes.forEach(function(n) {
+        cpuCap += n.cpuCapacityM; memCap += n.memCapacityKi;
+        cpuAlloc += n.cpuAllocatableM; memAlloc += n.memAllocatableKi;
+        if (n.cpuUsageM != null) cpuUsage += n.cpuUsageM;
+        if (n.memUsageKi != null) memUsage += n.memUsageKi;
+      });
+    }
+    var pods = (view.resources.pods || []).filter(function(p) { return !nsVal || ns(p) === nsVal; });
+    var cpuReq = 0, memReq = 0, cpuLim = 0, memLim = 0, podCpuUsage = 0, podMemUsage = 0;
+    pods.forEach(function(p) {
+      cpuReq += p._cpuRequestM || 0; memReq += p._memRequestKi || 0;
+      cpuLim += p._cpuLimitM || 0; memLim += p._memLimitKi || 0;
+      if (p._cpuUsageM != null) podCpuUsage += p._cpuUsageM;
+      if (p._memUsageKi != null) podMemUsage += p._memUsageKi;
+    });
+    if (nsVal) { cpuUsage = podCpuUsage; memUsage = podMemUsage; }
+    return {cpuCap: cpuCap, memCap: memCap, cpuAlloc: cpuAlloc, memAlloc: memAlloc,
+            cpuReq: cpuReq, memReq: memReq, cpuLim: cpuLim, memLim: memLim,
+            cpuUsage: cpuUsage, memUsage: memUsage, haveUsage: haveUsage, scopedToNs: !!nsVal};
+  }
+
+  function coresOf(m) { return +(m / 1000).toFixed(2); }
+  function gibOf(ki) { return +(ki / 1024 / 1024).toFixed(2); }
+
+  function renderCharts() {
+    var t = computeTotals();
+    var cpuLabels = ['Requests', 'Limits'];
+    var cpuData = [coresOf(t.cpuReq), coresOf(t.cpuLim)];
+    var memLabels = ['Requests', 'Limits'];
+    var memData = [gibOf(t.memReq), gibOf(t.memLim)];
+    if (!t.scopedToNs) {
+      cpuLabels = ['Capacity', 'Allocatable', 'Requests', 'Limits'];
+      cpuData = [coresOf(t.cpuCap), coresOf(t.cpuAlloc), coresOf(t.cpuReq), coresOf(t.cpuLim)];
+      memLabels = ['Capacity', 'Allocatable', 'Requests', 'Limits'];
+      memData = [gibOf(t.memCap), gibOf(t.memAlloc), gibOf(t.memReq), gibOf(t.memLim)];
+    }
+    if (t.haveUsage) { cpuLabels.push('Used'); cpuData.push(coresOf(t.cpuUsage)); memLabels.push('Used'); memData.push(gibOf(t.memUsage)); }
+
+    document.getElementById('metrics-note').classList.toggle('hidden', t.haveUsage);
+
+    var colors = ['#4f46e5', '#6366f1', '#f59e0b', '#ef4444', '#10b981'];
+    var tickColor = isDark() ? '#94a3b8' : '#4b4470';
+    var gridColor = isDark() ? 'rgba(148,163,184,0.15)' : 'rgba(75,68,112,0.12)';
+    var chartOpts = {
+      plugins: {legend: {display: false}},
+      scales: {
+        y: {beginAtZero: true, ticks: {color: tickColor}, grid: {color: gridColor}},
+        x: {ticks: {color: tickColor}, grid: {color: gridColor}},
+      },
+    };
+    if (cpuChart) cpuChart.destroy();
+    if (memChart) memChart.destroy();
+    var ctxCpu = document.getElementById('cpu-chart').getContext('2d');
+    cpuChart = new Chart(ctxCpu, {type: 'bar', data: {labels: cpuLabels, datasets: [{data: cpuData, backgroundColor: colors}]}, options: chartOpts});
+    var ctxMem = document.getElementById('mem-chart').getContext('2d');
+    memChart = new Chart(ctxMem, {type: 'bar', data: {labels: memLabels, datasets: [{data: memData, backgroundColor: colors}]}, options: chartOpts});
+  }
+
+  function renderAll() {
+    renderRibbon();
+    renderCharts();
+    renderTabs();
+    renderGrid();
+  }
+
+  function populateNsFilter() {
+    var sel = document.getElementById('ns-filter');
+    sel.innerHTML = '<option value="">All namespaces</option>';
+    view.namespaces.forEach(function(n) {
+      var o = document.createElement('option');
+      o.value = n; o.textContent = n;
+      sel.appendChild(o);
+    });
+  }
+
+  function load() {
+    document.getElementById('loading').classList.remove('hidden');
+    document.getElementById('content').classList.add('hidden');
+    document.getElementById('load-error').classList.add('hidden');
+    fetch('/clusters/' + encodeURIComponent(clusterName) + '/resources/data')
+      .then(function(r) { return r.json().then(function(body) { return {ok: r.ok, body: body}; }); })
+      .then(function(res) {
+        if (!res.ok) throw new Error(res.body.error || 'failed to load');
+        view = res.body;
+        view.resources = view.resources || {};
+        view.namespaces = view.namespaces || [];
+        view.nodes = view.nodes || [];
+        document.getElementById('loading').classList.add('hidden');
+        document.getElementById('content').classList.remove('hidden');
+        populateNsFilter();
+        renderAll();
+      })
+      .catch(function(err) {
+        document.getElementById('loading').classList.add('hidden');
+        var el = document.getElementById('load-error');
+        el.textContent = 'Could not load cluster resources: ' + err.message;
+        el.classList.remove('hidden');
+      });
+  }
+
+  document.getElementById('refresh-btn').addEventListener('click', load);
+  document.getElementById('ns-filter').addEventListener('change', function() { renderCharts(); renderTabs(); renderGrid(); });
+  document.getElementById('text-filter').addEventListener('input', function() { renderGrid(); });
+  // Grid/chart colors are set at creation time (AG Grid's theme is a CSS
+  // class, Chart.js's colors are baked into each chart instance), so a
+  // theme flip needs both re-created rather than just re-styled in place.
+  document.addEventListener('pvekube-theme-change', function() {
+    if (!view) return;
+    renderCharts();
+    renderGrid();
+  });
+
+  load();
+})();
+</script>
+{{end}}

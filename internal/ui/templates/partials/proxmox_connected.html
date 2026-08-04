@@ -37,6 +37,25 @@
       </div>
       {{end}}
     </div>
+    <details class="mt-3 rounded-lg border border-slate-800 bg-slate-950/50 px-3 py-2">
+      <summary class="cursor-pointer text-sm text-slate-300">Template builds or cluster launches failing with a 403? Run the full readiness script.</summary>
+      <p class="mt-2 text-xs text-slate-500">
+        The checks above marked "assumed" can't be verified without actually creating a VM, so gaps in
+        <code>Datastore.AllocateSpace</code> or <code>SDN.Use</code> only surface once a real build runs.
+        Running all four grants below on the Proxmox host (as root) covers every permission PVEKube needs —
+        safe to re-run any time.
+      </p>
+      <pre class="mt-2 overflow-x-auto rounded-lg bg-black/50 p-3 font-mono text-xs text-slate-300">pveum acl modify / -user {{.Conn.TokenUser}} -role PVEVMAdmin
+pveum acl modify / -user {{.Conn.TokenUser}} -role PVEDatastoreAdmin
+pveum acl modify / -user {{.Conn.TokenUser}} -role PVEAuditor
+pveum acl modify /sdn -user {{.Conn.TokenUser}} -role PVEAdmin</pre>
+      <p class="mt-2 text-xs text-slate-500">
+        Check whether your token has privilege separation enabled with
+        <code>pveum user token list {{.Conn.TokenUser}}</code>. If the <code>privsep</code> column shows
+        <code>1</code>, repeat these four commands with <code>-token '{{.Conn.TokenID}}'</code> instead of
+        <code>-user {{.Conn.TokenUser}}</code> — grants on the user alone won't reach the token.
+      </p>
+    </details>
   </div>
 
   <div class="grid gap-4 sm:grid-cols-2">

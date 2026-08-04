@@ -4,6 +4,8 @@
 package prereq
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -34,6 +36,10 @@ func BuildFixSpec(checkID, binDir, dataDir string) *jobs.Spec {
 		return binaryDownloadSpec("clusterctl", binDir, versions.Clusterctl, clusterctlDownloadURL)
 	case "bin_kubectl":
 		return binaryDownloadSpec("kubectl", binDir, versions.Kubectl, kubectlDownloadURL)
+	case "bin_cilium":
+		return ciliumCLIDownloadSpec(binDir)
+	case "bin_istioctl":
+		return istioctlDownloadSpec(binDir)
 	case "img_imagebuilder":
 		return pullImageSpec()
 	case "kind_cluster":
@@ -151,7 +157,93 @@ func downloadFile(ctx context.Context, url, dest string) (string, error) {
 }
 
 func verifyKubectlChecksum(ctx context.Context, binURL, gotDigest string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, binURL+".sha256", nil)
+	return verifyChecksumSidecar(ctx, binURL+".sha256", gotDigest)
+}
+
+func firstToken(s string) string {
+	for i, c := range s {
+		if c == ' ' || c == '\n' || c == '\t' {
+			return s[:i]
+		}
+	}
+	return s
+}
+
+// ciliumCLIDownloadSpec downloads and installs cilium-cli. Unlike kind/
+// clusterctl/kubectl (raw binaries), cilium-cli ships as a .tar.gz — verified
+// against its published sha256sum sidecar (same "<hex>  <filename>" format
+// kubectl's sidecar uses, so firstToken/downloadFile are reused as-is), then
+// the single "cilium" binary inside is extracted into binDir.
+func ciliumCLIDownloadSpec(binDir string) *jobs.Spec {
+	return jobs.NewSpec("prereq.download_cilium", "Download cilium-cli "+versions.CiliumCLI).
+		Step("Download cilium-cli", func(c *jobs.Ctx) error {
+			goos, arch := runtime.GOOS, runtime.GOARCH
+			url := fmt.Sprintf("https://github.com/cilium/cilium-cli/releases/download/%s/cilium-%s-%s.tar.gz", versions.CiliumCLI, goos, arch)
+			c.Logf("Downloading cilium-cli from %s", url)
+
+			tmpTar := filepath.Join(binDir, "cilium-cli.tar.gz.download")
+			digest, err := downloadFile(c, url, tmpTar)
+			if err != nil {
+				return err
+			}
+			defer os.Remove(tmpTar)
+
+			if err := verifyChecksumSidecar(c, url+".sha256sum", digest); err != nil {
+				return err
+			}
+			c.Logf("Checksum verified against %s.sha256sum", url)
+
+			dest := filepath.Join(binDir, "cilium")
+			if err := extractSingleFileFromTarGz(tmpTar, "cilium", dest); err != nil {
+				return fmt.Errorf("extracting cilium binary: %w", err)
+			}
+			if err := os.Chmod(dest, 0o755); err != nil {
+				return err
+			}
+			c.Logf("Saved to %s", dest)
+			return nil
+		})
+}
+
+// istioctlDownloadSpec mirrors ciliumCLIDownloadSpec exactly — istioctl's
+// release asset is the same shape (a flat .tar.gz containing one binary,
+// with a "<url>.sha256" sidecar in the same "<hex> <filename>" format).
+func istioctlDownloadSpec(binDir string) *jobs.Spec {
+	return jobs.NewSpec("prereq.download_istioctl", "Download istioctl "+versions.IstioctlVersion).
+		Step("Download istioctl", func(c *jobs.Ctx) error {
+			goos, arch := runtime.GOOS, runtime.GOARCH
+			url := versions.IstioctlDownloadURL(goos, arch)
+			c.Logf("Downloading istioctl from %s", url)
+
+			tmpTar := filepath.Join(binDir, "istioctl.tar.gz.download")
+			digest, err := downloadFile(c, url, tmpTar)
+			if err != nil {
+				return err
+			}
+			defer os.Remove(tmpTar)
+
+			if err := verifyChecksumSidecar(c, url+".sha256", digest); err != nil {
+				return err
+			}
+			c.Logf("Checksum verified against %s.sha256", url)
+
+			dest := filepath.Join(binDir, "istioctl")
+			if err := extractSingleFileFromTarGz(tmpTar, "istioctl", dest); err != nil {
+				return fmt.Errorf("extracting istioctl binary: %w", err)
+			}
+			if err := os.Chmod(dest, 0o755); err != nil {
+				return err
+			}
+			c.Logf("Saved to %s", dest)
+			return nil
+		})
+}
+
+// verifyChecksumSidecar is verifyKubectlChecksum generalized to any URL —
+// both kubectl's "<url>.sha256" and cilium-cli's "<url>.sha256sum" sidecars
+// use the same "<hex-digest> [whitespace] <filename>" format.
+func verifyChecksumSidecar(ctx context.Context, sidecarURL, gotDigest string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sidecarURL, nil)
 	if err != nil {
 		return err
 	}
@@ -177,13 +269,44 @@ func verifyKubectlChecksum(ctx context.Context, binURL, gotDigest string) error 
 	return nil
 }
 
-func firstToken(s string) string {
-	for i, c := range s {
-		if c == ' ' || c == '\n' || c == '\t' {
-			return s[:i]
-		}
+// extractSingleFileFromTarGz pulls one named file out of a .tar.gz archive
+// (cilium-cli's release asset contains just the "cilium" binary at the
+// archive root) and writes it to dest.
+func extractSingleFileFromTarGz(archivePath, wantName, dest string) error {
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return err
 	}
-	return s
+	defer f.Close()
+
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		return err
+	}
+	defer gz.Close()
+
+	tr := tar.NewReader(gz)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			return fmt.Errorf("%s not found in archive", wantName)
+		}
+		if err != nil {
+			return err
+		}
+		if filepath.Base(hdr.Name) != wantName {
+			continue
+		}
+		out, err := os.Create(dest)
+		if err != nil {
+			return err
+		}
+		if _, err := io.Copy(out, tr); err != nil {
+			out.Close()
+			return err
+		}
+		return out.Close()
+	}
 }
 
 func kindDownloadURL(goos, arch, version string) string {

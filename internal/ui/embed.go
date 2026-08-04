@@ -19,14 +19,15 @@ var templatesFS embed.FS
 // pages into a single set every page's "content" block would collide.
 // Rendering a page = pages[name].ExecuteTemplate(w, "layout", data).
 var pageFiles = map[string]string{
-	"login":          "templates/login.html",
-	"setup":          "templates/setup.html",
-	"dashboard":      "templates/dashboard.html",
-	"prereqs":        "templates/prereqs.html",
-	"proxmox":        "templates/proxmox.html",
-	"templates":      "templates/templates.html",
-	"clusters":       "templates/clusters.html",
-	"cluster_detail": "templates/cluster_detail.html",
+	"login":             "templates/login.html",
+	"setup":             "templates/setup.html",
+	"dashboard":         "templates/dashboard.html",
+	"prereqs":           "templates/prereqs.html",
+	"proxmox":           "templates/proxmox.html",
+	"templates":         "templates/templates.html",
+	"clusters":          "templates/clusters.html",
+	"cluster_detail":    "templates/cluster_detail.html",
+	"cluster_resources": "templates/cluster_resources.html",
 }
 
 var pages = mustParsePages()

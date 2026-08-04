@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"runtime"
 	"strconv"
@@ -107,12 +108,24 @@ func (s *Server) parseTemplateForm(r *http.Request, conn *storedConnection) (tem
 	s.redactor.Track(secret)
 
 	env := imagebuilder.ConnEnv{
-		URL: proxmox.NormalizeURL(conn.URL), TokenID: conn.TokenID, Secret: secret,
+		URL: proxmox.NormalizeURL(conn.URL), TokenID: conn.TokenID, Secret: secret, InsecureTLS: conn.InsecureTLS,
 		Node: r.FormValue("node"), Bridge: r.FormValue("bridge"),
 		ISOPool: r.FormValue("iso_pool"), StoragePool: r.FormValue("storage_pool"),
 	}
 	if env.Node == "" || env.Bridge == "" || env.ISOPool == "" || env.StoragePool == "" {
 		return templateFormInput{}, errBadInput("node, bridge, ISO pool, and storage pool are all required")
+	}
+
+	// LVM-thin/ZFS storage pools reject qcow2 outright — resolve the format
+	// the discovery scan already determined for this pool so it's passed
+	// through to Packer instead of silently falling back to qcow2.
+	if snap := s.loadCachedDiscovery(conn.ID); snap != nil {
+		for _, st := range snap.Storage {
+			if st.ID == env.StoragePool {
+				env.DiskFormat = st.DiskFormat
+				break
+			}
+		}
 	}
 
 	return templateFormInput{flavor: flavor, k8sVersion: r.FormValue("k8s_version"), env: env}, nil
@@ -184,14 +197,24 @@ func (s *Server) handleTemplatesBuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	k8sVersion := input.k8sVersion
-	if k8sVersion == "" {
-		k8sVersion = "image-builder default"
-	}
-
 	spec := imagebuilder.BuildSpec(s.dataDir, input.flavor, input.k8sVersion, vmid, input.env)
-	connID, node, flavorID := conn.ID, input.env.Node, input.flavor.ID
+	connID, node, flavorID, dataDir := conn.ID, input.env.Node, input.flavor.ID, s.dataDir
+	requestedK8sVersion := input.k8sVersion
 	spec.Step("Record template", func(c *jobs.Ctx) error {
+		// Resolve the actual semver here, not eagerly before the build starts:
+		// the image-builder repo (which config/kubernetes.json lives in) is
+		// only guaranteed cloned by this point in the pipeline. Recording a
+		// placeholder like "image-builder default" instead of a real semver
+		// breaks cluster creation later — clusterctl rejects non-semver
+		// --kubernetes-version values outright.
+		k8sVersion := requestedK8sVersion
+		if k8sVersion == "" {
+			resolved, err := imagebuilder.DefaultKubernetesSemver(dataDir)
+			if err != nil {
+				return fmt.Errorf("resolving image-builder's default Kubernetes version: %w", err)
+			}
+			k8sVersion = resolved
+		}
 		_, err := s.db.Exec(`INSERT INTO templates (connection_id, os_flavor, k8s_version, node, vmid, build_job_id) VALUES (?, ?, ?, ?, ?, ?)`,
 			connID, flavorID, k8sVersion, node, vmid, c.JobID)
 		if err != nil {
@@ -210,4 +233,53 @@ func (s *Server) handleTemplatesBuild(w http.ResponseWriter, r *http.Request) {
 		"JobID": jobID, "Title": spec.Title,
 		"WrapperID": "templates-panel", "ReloadURL": "/templates/panel", "ReloadTarget": "#templates-panel",
 	})
+}
+
+// handleTemplatesDelete removes a built template — both the Proxmox VM and
+// PVEKube's own record of it. Synchronous rather than job-based: deleting a
+// template VM is quick (Proxmox has no OS to shut down cleanly, just
+// storage to reclaim), unlike a multi-minute template build.
+func (s *Server) handleTemplatesDelete(w http.ResponseWriter, r *http.Request) {
+	session := r.Context().Value(ctxSessionKey{}).(string)
+	if !s.checkCSRF(r, session) {
+		http.Error(w, "bad csrf", http.StatusForbidden)
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		http.Error(w, "bad template id", http.StatusBadRequest)
+		return
+	}
+
+	var connID, vmid int64
+	var node string
+	if err := s.db.QueryRow(`SELECT connection_id, node, vmid FROM templates WHERE id = ?`, id).Scan(&connID, &node, &vmid); err != nil {
+		http.Error(w, "template not found", http.StatusNotFound)
+		return
+	}
+
+	conn, err := s.getConnection()
+	if err != nil || conn.ID != connID {
+		http.Error(w, "template's Proxmox connection is no longer active", http.StatusBadRequest)
+		return
+	}
+	client, err := s.proxmoxClientFor(conn)
+	if err != nil {
+		s.renderTemplatesPanel(w, r.Context(), session, conn, err.Error())
+		return
+	}
+
+	cctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	if err := client.DeleteVM(cctx, node, int(vmid)); err != nil {
+		s.renderTemplatesPanel(w, r.Context(), session, conn, fmt.Sprintf("deleting VM %d on Proxmox: %s", vmid, err.Error()))
+		return
+	}
+
+	if _, err := s.db.Exec(`DELETE FROM templates WHERE id = ?`, id); err != nil {
+		s.renderTemplatesPanel(w, r.Context(), session, conn, "VM deleted on Proxmox, but removing the local record failed: "+err.Error())
+		return
+	}
+
+	s.renderTemplatesPanel(w, r.Context(), session, conn, "")
 }

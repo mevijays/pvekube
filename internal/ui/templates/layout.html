@@ -5,6 +5,18 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{block "title" .}}PVEKube{{end}}</title>
+  <script>
+    // Set data-theme before anything paints, so there's no flash of the
+    // wrong theme. Light (purple/white) is the default; dark is opt-in and
+    // persisted. Everything below in this file is written dark-first (the
+    // original, unmodified look of every existing template) — the
+    // [data-theme="light"] block further down overrides it, so dark mode
+    // needs zero extra CSS of its own.
+    (function() {
+      var saved = localStorage.getItem('pvekube-theme');
+      document.documentElement.setAttribute('data-theme', saved === 'dark' ? 'dark' : 'light');
+    })();
+  </script>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
   <script src="https://unpkg.com/htmx.org@2.0.4"></script>
@@ -19,11 +31,192 @@
       }
     }
   </script>
+  <style>
+    /* Hover-state colors for light theme. Inline styles (see the script
+       below) can't express :hover, so this small block handles just those
+       cases; everything else is done via JS so it can't lose to Tailwind's
+       CDN-generated rules no matter how their cascade layers are ordered. */
+    [data-theme="light"] { color-scheme: light; }
+    [data-theme="light"] .hover\:bg-slate-800:hover { background-color: #f1eefc !important; }
+    [data-theme="light"] .hover\:text-white:hover,
+    [data-theme="light"] .hover\:text-slate-200:hover,
+    [data-theme="light"] .hover\:text-slate-300:hover { color: #211b3d !important; }
+    [data-theme="light"] .hover\:bg-red-950\/40:hover { background-color: #fef2f2 !important; }
+    [data-theme="light"] .hover\:bg-emerald-700:hover { background-color: #059669 !important; }
+    [data-theme="light"] .shadow-2xl { box-shadow: 0 20px 40px -10px rgba(80, 70, 120, 0.25) !important; }
+  </style>
 </head>
 <body class="h-full text-slate-200 antialiased">
   <div class="min-h-full">
     {{block "body" .}}{{end}}
   </div>
+
+  <div id="confirm-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4">
+    <div class="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
+      <div class="mb-5 flex items-start gap-3">
+        <div class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full bg-amber-950/60 text-amber-400">
+          <i class="fa fa-exclamation-triangle"></i>
+        </div>
+        <p id="confirm-modal-message" class="mt-1.5 text-sm leading-relaxed text-slate-200"></p>
+      </div>
+      <div class="flex justify-end gap-2">
+        <button id="confirm-modal-cancel" type="button" class="rounded-lg border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800">Cancel</button>
+        <button id="confirm-modal-ok" type="button" class="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  (function() {
+    // Replace htmx's default hx-confirm (a plain browser confirm() popup)
+    // with the styled modal above — applies to every hx-confirm in the app
+    // automatically, no per-button changes needed.
+    document.addEventListener('htmx:confirm', function(evt) {
+      if (!evt.detail.question) return; // no hx-confirm on this element — let it through
+      evt.preventDefault();
+      var modal = document.getElementById('confirm-modal');
+      var msgEl = document.getElementById('confirm-modal-message');
+      var okBtn = document.getElementById('confirm-modal-ok');
+      var cancelBtn = document.getElementById('confirm-modal-cancel');
+      msgEl.textContent = evt.detail.question;
+      modal.classList.remove('hidden');
+      // Blocks self-polling regions (e.g. #cluster-status's "every 5s") from
+      // swapping the confirming element out from under this dialog — see
+      // the [!window.pvekubeModalOpen] trigger filter on those elements.
+      // Without it, a poll landing while the dialog is open detaches the
+      // form issueRequest() is about to reuse, and the click silently does
+      // nothing.
+      window.pvekubeModalOpen = true;
+
+      function cleanup() {
+        modal.classList.add('hidden');
+        window.pvekubeModalOpen = false;
+        okBtn.removeEventListener('click', onOk);
+        cancelBtn.removeEventListener('click', onCancel);
+      }
+      function onOk() { cleanup(); evt.detail.issueRequest(true); }
+      function onCancel() { cleanup(); }
+      okBtn.addEventListener('click', onOk);
+      cancelBtn.addEventListener('click', onCancel);
+    });
+
+    // Give every hx-post/hx-get button a visible loading state — without
+    // this, a slow request (e.g. "Preview manifest" invoking clusterctl)
+    // looks identical to nothing happening at all. Covers both a button
+    // that directly carries hx-post, and a <form hx-post> submitted via its
+    // submit button (evt.detail.elt is the form in that case).
+    function loadingButtonFor(elt) {
+      if (elt.tagName === 'BUTTON') return elt;
+      if (elt.tagName === 'FORM') return elt.querySelector('button[type=submit]');
+      return null;
+    }
+    document.addEventListener('htmx:beforeRequest', function(evt) {
+      var el = loadingButtonFor(evt.detail.elt);
+      if (!el || el.dataset.originalHtml) return;
+      el.dataset.originalHtml = el.innerHTML;
+      el.disabled = true;
+      el.classList.add('opacity-60', 'cursor-wait');
+      el.innerHTML = '<i class="fa fa-spinner fa-spin mr-1.5"></i>' + (el.dataset.loadingText || 'Working...');
+    });
+    document.addEventListener('htmx:afterRequest', function(evt) {
+      var el = loadingButtonFor(evt.detail.elt);
+      if (!el || !el.dataset.originalHtml) return;
+      el.disabled = false;
+      el.classList.remove('opacity-60', 'cursor-wait');
+      el.innerHTML = el.dataset.originalHtml;
+      delete el.dataset.originalHtml;
+    });
+
+    // Theme toggle (button lives in nav.html, present on every page). Fires
+    // a "pvekube-theme-change" event so pages with theme-aware canvas/JS
+    // widgets (e.g. the resource viewer's AG Grid + Chart.js) can react
+    // without a full reload.
+    function setThemeIcon(theme) {
+      var icon = document.getElementById('theme-toggle-icon');
+      if (icon) icon.className = 'fa ' + (theme === 'light' ? 'fa-moon-o' : 'fa-sun-o');
+    }
+    setThemeIcon(document.documentElement.getAttribute('data-theme'));
+
+    // Light-theme repaint. Every template was built dark-only, using
+    // Tailwind's "slate" palette + status colors directly. A pure-CSS
+    // override (`[data-theme="light"] .bg-slate-950 { ... !important }`)
+    // was tried first and silently lost on most elements — Tailwind's CDN
+    // build wraps its generated utilities in CSS cascade layers, and layer
+    // order can beat a plain !important rule outside any layer depending on
+    // how the browser resolves it, which isn't something worth re-fighting.
+    // Inline styles have no such ambiguity: they always win over any
+    // class-based rule, layered or not. So this walks known utility-class
+    // selectors and sets (or clears) inline style properties directly,
+    // re-run after every htmx swap since new DOM keeps arriving.
+    var LIGHT_REPAINT_RULES = [
+      ['.bg-slate-950, .bg-slate-950\\/50', 'background-color', '#faf9ff'],
+      ['.bg-slate-900, .bg-slate-900\\/60, .bg-slate-900\\/40', 'background-color', '#ffffff'],
+      ['.bg-slate-800', 'background-color', '#f1eefc'],
+      ['.bg-slate-700', 'background-color', '#e2defa'],
+      ['.bg-black\\/40, .bg-black\\/50', 'background-color', '#f3f2fa'],
+      ['.bg-black\\/70', 'background-color', 'rgba(80,70,120,0.5)'],
+      ['.border-slate-700, .border-slate-800', 'border-color', '#e2defa'],
+      ['.text-white', 'color', '#211b3d'],
+      ['.text-slate-200, .text-slate-300', 'color', '#3d3760'],
+      ['.text-slate-400, .text-slate-500', 'color', '#746c94'],
+      ['.bg-red-950\\/50, .bg-red-950\\/20, .bg-red-950\\/10', 'background-color', '#fef2f2'],
+      ['.bg-red-900', 'background-color', '#fecaca'],
+      ['.border-red-900', 'border-color', '#fca5a5'],
+      ['.text-red-300, .text-red-400, .text-red-500', 'color', '#b91c1c'],
+      ['.bg-amber-950\\/60, .bg-amber-950\\/20, .bg-amber-950\\/10', 'background-color', '#fffbeb'],
+      ['.border-amber-900', 'border-color', '#fcd34d'],
+      ['.text-amber-200, .text-amber-400', 'color', '#b45309'],
+      ['.bg-emerald-950, .bg-emerald-950\\/10, .bg-emerald-950\\/20', 'background-color', '#ecfdf5'],
+      ['.bg-emerald-900', 'background-color', '#a7f3d0'],
+      ['.border-emerald-900', 'border-color', '#6ee7b7'],
+      ['.text-emerald-300, .text-emerald-500, .text-green-400, .text-green-500', 'color', '#047857'],
+      ['.text-yellow-400, .text-yellow-500', 'color', '#a16207']
+    ];
+    function repaintForTheme(root) {
+      var isLight = document.documentElement.getAttribute('data-theme') === 'light';
+      var scope = root || document;
+      LIGHT_REPAINT_RULES.forEach(function(rule) {
+        var selector = rule[0], prop = rule[1], value = rule[2];
+        var nodes = scope.querySelectorAll ? scope.querySelectorAll(selector) : [];
+        for (var i = 0; i < nodes.length; i++) {
+          if (isLight) nodes[i].style.setProperty(prop, value, 'important');
+          else nodes[i].style.removeProperty(prop);
+        }
+      });
+    }
+    repaintForTheme();
+
+    // Re-run after ANY DOM change, not just htmx swaps — several pages
+    // build their own DOM straight from JS (e.g. the resource viewer's
+    // ribbon tiles and tabs render from a fetch() callback, never touching
+    // htmx), and those need the same repaint or they stay dark-styled
+    // forever. Coalesced to once per animation frame so bursts of
+    // mutations (AG Grid virtualizing rows on scroll, etc.) don't cause a
+    // full-document querySelectorAll sweep per mutation.
+    var repaintQueued = false;
+    function scheduleRepaint() {
+      if (repaintQueued) return;
+      repaintQueued = true;
+      requestAnimationFrame(function() {
+        repaintQueued = false;
+        repaintForTheme();
+      });
+    }
+    new MutationObserver(scheduleRepaint).observe(document.body, {childList: true, subtree: true});
+
+    var themeBtn = document.getElementById('theme-toggle');
+    if (themeBtn) {
+      themeBtn.addEventListener('click', function() {
+        var next = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+        document.documentElement.setAttribute('data-theme', next);
+        localStorage.setItem('pvekube-theme', next);
+        setThemeIcon(next);
+        repaintForTheme();
+        document.dispatchEvent(new CustomEvent('pvekube-theme-change', {detail: next}));
+      });
+    }
+  })();
+  </script>
 </body>
 </html>
 {{end}}

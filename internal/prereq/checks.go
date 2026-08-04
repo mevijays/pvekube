@@ -62,6 +62,8 @@ func Registry(binDir, dataDir string) []Check {
 		checkBinary("kind", binDir, versions.Kind),
 		checkBinary("clusterctl", binDir, versions.Clusterctl),
 		checkBinary("kubectl", binDir, versions.Kubectl),
+		checkBinary("cilium", binDir, versions.CiliumCLI),
+		checkBinary("istioctl", binDir, versions.IstioctlVersion),
 		checkImageBuilderImage(),
 		checkKindCluster(binDir, dataDir),
 		checkCAPIProviders(binDir, dataDir),

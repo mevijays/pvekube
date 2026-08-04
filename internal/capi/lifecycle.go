@@ -3,7 +3,9 @@ package capi
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"time"
 
 	"pvekube/internal/bootstrap"
 	"pvekube/internal/jobs"
@@ -44,9 +46,14 @@ func ScaleControlPlaneSpec(dataDir, binDir, clusterName string, replicas int) *j
 
 // DeleteClusterSpec deletes the Cluster object, which CAPI cascades: every
 // Machine (and, via CAPMOX, its underlying Proxmox VM) is torn down before
-// the Cluster itself is removed. --wait=false so the job finishes once
-// deletion is *requested* — actual teardown can take several minutes and is
-// tracked by the cluster no longer appearing on refresh, not by this job.
+// the Cluster itself is removed. The delete request itself uses --wait=false
+// (so it returns immediately rather than blocking on kubectl's own delete
+// wait, which doesn't stream progress), but the job as a whole DOES wait —
+// via a second step that polls until the Cluster object is actually gone —
+// so job "succeeded" means teardown is genuinely complete, not just
+// requested. This also means callers can safely add a step after this spec's
+// steps (e.g. removing a local DB record) knowing the infrastructure is
+// really gone by the time it runs.
 func DeleteClusterSpec(dataDir, binDir, clusterName string) *jobs.Spec {
 	return jobs.NewSpec("cluster.delete", "Delete cluster "+clusterName).
 		Step("kubectl delete cluster", func(c *jobs.Ctx) error {
@@ -54,6 +61,32 @@ func DeleteClusterSpec(dataDir, binDir, clusterName string) *jobs.Spec {
 			kcPath := bootstrap.KubeconfigPath(dataDir)
 			return runner.Run(c, c, "", nil, kubectlBin, "--kubeconfig", kcPath,
 				"delete", "cluster", clusterName, "--wait=false")
+		}).
+		Step("Wait for teardown to finish", func(c *jobs.Ctx) error {
+			kubectlBin := filepath.Join(binDir, "kubectl")
+			kcPath := bootstrap.KubeconfigPath(dataDir)
+			deadline := time.Now().Add(15 * time.Minute)
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-c.Done():
+					return c.Err()
+				case <-ticker.C:
+					err := exec.CommandContext(c, kubectlBin, "--kubeconfig", kcPath,
+						"get", "cluster", clusterName).Run()
+					if err != nil {
+						// kubectl get returning an error (NotFound, in practice) is
+						// exactly the "gone" signal we're waiting for.
+						c.Logf("Cluster %s and all its VMs are fully torn down", clusterName)
+						return nil
+					}
+					if time.Now().After(deadline) {
+						return fmt.Errorf("cluster %s still exists after 15 minutes — teardown may be stuck; check `kubectl describe cluster %s` on the management cluster", clusterName, clusterName)
+					}
+					c.Logf("Still tearing down %s...", clusterName)
+				}
+			}
 		})
 }
 

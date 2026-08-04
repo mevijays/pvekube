@@ -57,11 +57,13 @@
 
       <div class="flex gap-3 pt-2">
         <button type="button" hx-post="/templates/validate" hx-target="#templates-panel" hx-swap="innerHTML" hx-include="closest form"
+                data-loading-text="Validating..."
                 class="rounded-lg border border-slate-700 px-4 py-2.5 text-sm font-semibold text-slate-200 hover:bg-slate-800">
           <i class="fa fa-check-square-o mr-1.5"></i>Validate only (seconds)
         </button>
         <button type="button" hx-post="/templates/build" hx-target="#templates-panel" hx-swap="innerHTML" hx-include="closest form"
                 hx-confirm="This will allocate a VMID and run a real 20-35 minute Packer build on Proxmox. Continue?"
+                data-loading-text="Starting build..."
                 class="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-brand-700">
           <i class="fa fa-cogs mr-1.5"></i>Build template (20-35 min)
         </button>
@@ -74,7 +76,7 @@
     {{if .Built}}
     <table class="w-full text-left text-sm">
       <thead class="text-slate-500">
-        <tr><th class="pb-2 font-normal">OS</th><th class="pb-2 font-normal">Kubernetes</th><th class="pb-2 font-normal">Node</th><th class="pb-2 font-normal">VMID</th><th class="pb-2 font-normal">Built</th></tr>
+        <tr><th class="pb-2 font-normal">OS</th><th class="pb-2 font-normal">Kubernetes</th><th class="pb-2 font-normal">Node</th><th class="pb-2 font-normal">VMID</th><th class="pb-2 font-normal">Built</th><th class="pb-2 font-normal"></th></tr>
       </thead>
       <tbody>
         {{range .Built}}
@@ -84,6 +86,15 @@
           <td class="py-2 text-slate-400">{{.Node}}</td>
           <td class="py-2 text-slate-400">{{.VMID}}</td>
           <td class="py-2 text-slate-400">{{.CreatedAt}}</td>
+          <td class="py-2 text-right">
+            <button type="button"
+                    hx-post="/templates/{{.ID}}/delete" hx-target="#templates-panel" hx-swap="innerHTML"
+                    hx-vals='{"csrf": "{{$.CSRF}}"}'
+                    hx-confirm="Delete this template? This removes VMID {{.VMID}} from Proxmox permanently — any cluster still referencing it for scaling will break."
+                    class="rounded-lg border border-red-900 px-2.5 py-1 text-xs text-red-300 hover:bg-red-950/40">
+              <i class="fa fa-trash mr-1"></i>Delete
+            </button>
+          </td>
         </tr>
         {{end}}
       </tbody>

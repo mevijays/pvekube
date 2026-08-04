@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"pvekube/internal/capi"
@@ -61,15 +62,63 @@ func (s *Server) renderClustersPanel(w http.ResponseWriter, ctx context.Context,
 	}
 
 	templates := s.listTemplates(conn.ID)
-	clusters := s.listClusters(conn.ID)
 
 	ui.RenderPartial(w, "clusters_panel", map[string]any{
 		"Error":     errMsg,
 		"CSRF":      s.csrfFor(session),
 		"Snapshot":  snap,
 		"Templates": templates,
-		"Clusters":  clusters,
 	})
+}
+
+// handleClustersList renders just the cluster table, refreshed live against
+// the management cluster on every call. It's polled every 5s (see
+// clusters_list.html's own hx-trigger) so the Clusters list reflects real
+// provisioning progress without anyone needing to open a cluster's detail
+// page first — before this, the DB's status column only got updated by
+// handleClusterStatus, so a cluster nobody had clicked into would show
+// "provisioning" forever even after it finished.
+func (s *Server) handleClustersList(w http.ResponseWriter, r *http.Request) {
+	conn, err := s.getConnection()
+	if err != nil {
+		ui.RenderPartial(w, "clusters_list", map[string]any{"Clusters": nil})
+		return
+	}
+
+	rows, err := s.db.Query(`SELECT name, status, created_at FROM clusters WHERE connection_id = ? ORDER BY id DESC`, conn.ID)
+	var names []clusterListView
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var c clusterListView
+			rows.Scan(&c.Name, &c.Status, &c.CreatedAt)
+			names = append(names, c)
+		}
+	}
+
+	// Refresh each cluster's phase concurrently — a handful of `kubectl get`
+	// calls, cheap and bounded, fine at homelab scale.
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	for i := range names {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			cctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+			defer cancel()
+			status, err := capi.GetStatus(cctx, s.dataDir, s.binDir, names[idx].Name)
+			if err != nil || !status.Found || status.Phase == "" {
+				return
+			}
+			mu.Lock()
+			names[idx].Status = status.Phase
+			mu.Unlock()
+			s.db.Exec(`UPDATE clusters SET status = ? WHERE name = ?`, status.Phase, names[idx].Name)
+		}(i)
+	}
+	wg.Wait()
+
+	ui.RenderPartial(w, "clusters_list", map[string]any{"Clusters": names})
 }
 
 func (s *Server) listTemplates(connID int64) []templateOptionView {
@@ -83,21 +132,6 @@ func (s *Server) listTemplates(connID int64) []templateOptionView {
 		var t templateOptionView
 		rows.Scan(&t.ID, &t.OSFlavor, &t.K8sVersion, &t.Node, &t.VMID)
 		out = append(out, t)
-	}
-	return out
-}
-
-func (s *Server) listClusters(connID int64) []clusterListView {
-	rows, err := s.db.Query(`SELECT name, status, created_at FROM clusters WHERE connection_id = ? ORDER BY id DESC`, connID)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-	var out []clusterListView
-	for rows.Next() {
-		var c clusterListView
-		rows.Scan(&c.Name, &c.Status, &c.CreatedAt)
-		out = append(out, c)
 	}
 	return out
 }
@@ -123,6 +157,7 @@ type clusterForm struct {
 	dnsServers           []string
 	vmSSHKeys            []string
 	allowedNodes         []string
+	addons               capi.AddonSelection
 }
 
 func (s *Server) parseClusterForm(r *http.Request, connID int64) (clusterForm, error) {
@@ -133,18 +168,27 @@ func (s *Server) parseClusterForm(r *http.Request, connID int64) (clusterForm, e
 		workerCount:          atoiDefault(r.FormValue("worker_count"), 0),
 		cni:                  capi.CNIFlavor(r.FormValue("cni")),
 		bridge:               r.FormValue("bridge"),
-		numSockets:           atoiDefault(r.FormValue("num_sockets"), 2),
-		numCores:             atoiDefault(r.FormValue("num_cores"), 4),
-		memoryMiB:            atoiDefault(r.FormValue("memory_mib"), 8048),
+		numSockets:           atoiDefault(r.FormValue("num_sockets"), 1),
+		numCores:             atoiDefault(r.FormValue("num_cores"), 2),
+		memoryMiB:            atoiDefault(r.FormValue("memory_mib"), 4096),
 		bootVolumeSize:       atoiDefault(r.FormValue("boot_volume_size"), 100),
 		gateway:              r.FormValue("gateway"),
 		ipPrefix:             atoiDefault(r.FormValue("ip_prefix"), 24),
 		controlPlaneEndpoint: r.FormValue("control_plane_endpoint_ip"),
 		nodeIPRange:          r.FormValue("node_ip_range"),
 		allowedNodes:         r.Form["allowed_nodes"],
+		addons: capi.AddonSelection{
+			MetricsServer: r.FormValue("install_metrics_server") == "1",
+			Istio:         r.FormValue("install_istio") == "1",
+			MetalLB:       r.FormValue("install_metallb") == "1",
+			MetalLBIPPool: strings.TrimSpace(r.FormValue("metallb_ip_pool")),
+		},
 	}
 	if f.name == "" {
 		return f, errBadInput("cluster name is required")
+	}
+	if f.addons.MetalLB && f.addons.MetalLBIPPool == "" {
+		return f, errBadInput("MetalLB is checked but no IP pool was given")
 	}
 	for _, s := range strings.Split(r.FormValue("dns_servers"), ",") {
 		if t := strings.TrimSpace(s); t != "" {
@@ -240,7 +284,9 @@ func (s *Server) handleClustersPreview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ui.RenderPartial(w, "cluster_preview", map[string]any{
-		"ClusterName": f.name, "TemplateID": f.templateID, "YAML": yaml, "CSRF": s.csrfFor(session),
+		"ClusterName": f.name, "TemplateID": f.templateID, "YAML": yaml, "CSRF": s.csrfFor(session), "CNI": string(f.cni),
+		"InstallMetricsServer": f.addons.MetricsServer, "InstallIstio": f.addons.Istio,
+		"InstallMetalLB": f.addons.MetalLB, "MetalLBIPPool": f.addons.MetalLBIPPool,
 	})
 }
 
@@ -277,7 +323,14 @@ func (s *Server) handleClustersApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	spec := capi.ApplySpec(name, s.dataDir, s.binDir, proxmox.NormalizeURL(conn.URL), conn.TokenID, secret, yaml)
+	cni := capi.CNIFlavor(r.FormValue("cni"))
+	addons := capi.AddonSelection{
+		MetricsServer: r.FormValue("install_metrics_server") == "1",
+		Istio:         r.FormValue("install_istio") == "1",
+		MetalLB:       r.FormValue("install_metallb") == "1",
+		MetalLBIPPool: strings.TrimSpace(r.FormValue("metallb_ip_pool")),
+	}
+	spec := capi.ApplySpec(name, s.dataDir, s.binDir, proxmox.NormalizeURL(conn.URL), conn.TokenID, secret, yaml, cni, addons)
 	jobID, err := s.jobs.Start(spec, `{"cluster":"`+name+`"}`)
 	if err != nil {
 		s.renderClustersPanel(w, r.Context(), session, conn, "starting job: "+err.Error())

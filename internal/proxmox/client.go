@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -49,6 +50,27 @@ func New(cfg Config) *Client {
 			},
 		},
 	}
+}
+
+// TokenUser returns the "user@realm" portion of the configured token ID
+// (stripping "!tokenname"), i.e. the principal `pveum acl modify` commands
+// need for -user, and `pveum user token list` needs to check privilege
+// separation on. Used to generate copy-paste-ready fix commands instead of
+// placeholder text.
+func (c *Client) TokenUser() string {
+	if idx := strings.Index(c.tokenID, "!"); idx >= 0 {
+		return c.tokenID[:idx]
+	}
+	return c.tokenID
+}
+
+// TokenName returns the "!tokenname" portion of the configured token ID
+// (without the "!"), e.g. "capi" from "capmox@pve!capi".
+func (c *Client) TokenName() string {
+	if idx := strings.Index(c.tokenID, "!"); idx >= 0 {
+		return c.tokenID[idx+1:]
+	}
+	return ""
 }
 
 // NormalizeURL fills in a default https:// scheme and :8006 port when
@@ -89,21 +111,46 @@ func IsAuthError(err error) bool {
 }
 
 func (c *Client) get(ctx context.Context, path string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
+	return c.do(ctx, http.MethodGet, path, nil, out)
+}
+
+// post issues a form-encoded POST (Proxmox's API takes application/x-www-form-urlencoded,
+// not JSON, for write operations) and decodes the "data" envelope into out.
+func (c *Client) post(ctx context.Context, path string, form url.Values, out any) error {
+	var body io.Reader
+	if form != nil {
+		body = strings.NewReader(form.Encode())
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, body)
+	if err != nil {
+		return err
+	}
+	if form != nil {
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+	req.Header.Set("Authorization", fmt.Sprintf("PVEAPIToken=%s=%s", c.tokenID, c.secret))
+	return c.exec(req, out)
+}
+
+func (c *Client) do(ctx context.Context, method, path string, body io.Reader, out any) error {
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", fmt.Sprintf("PVEAPIToken=%s=%s", c.tokenID, c.secret))
+	return c.exec(req, out)
+}
 
+func (c *Client) exec(req *http.Request, out any) error {
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("connecting to proxmox at %s: %w", c.baseURL, err)
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return &apiError{Status: resp.StatusCode, Body: strings.TrimSpace(string(body))}
+		return &apiError{Status: resp.StatusCode, Body: strings.TrimSpace(string(respBody))}
 	}
 	if out == nil {
 		return nil
@@ -111,8 +158,8 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 	var envelope struct {
 		Data json.RawMessage `json:"data"`
 	}
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		return fmt.Errorf("decoding proxmox response from %s: %w", path, err)
+	if err := json.Unmarshal(respBody, &envelope); err != nil {
+		return fmt.Errorf("decoding proxmox response from %s: %w", req.URL.Path, err)
 	}
 	return json.Unmarshal(envelope.Data, out)
 }

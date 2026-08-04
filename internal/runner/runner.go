@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"syscall"
 	"time"
 )
 
@@ -32,9 +33,16 @@ func Run(ctx context.Context, log LineWriter, dir string, env []string, name str
 	if len(env) > 0 {
 		cmd.Env = append(cmd.Environ(), env...)
 	}
+	// SIGTERM, not Kill (SIGKILL): for a `docker run` client this matters —
+	// Docker's CLI catches SIGTERM and gracefully stops+removes the actual
+	// container in the daemon, but SIGKILL just vaporizes the local client
+	// process, leaving the container running server-side indefinitely.
+	// WaitDelay is the safety net: if SIGTERM doesn't finish the job in time,
+	// Go force-kills the client on its own after this elapses.
 	cmd.Cancel = func() error {
-		return cmd.Process.Kill()
+		return cmd.Process.Signal(syscall.SIGTERM)
 	}
+	cmd.WaitDelay = 20 * time.Second
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
