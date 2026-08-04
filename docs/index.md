@@ -21,6 +21,16 @@ Manage production-grade Kubernetes clusters on Proxmox without touching the CLI.
 ✅ **Lifecycle Ops** — Scale workers/control-plane, teardown with residue scrubbing, rolling upgrades  
 ✅ **Secure** — Encrypted credential storage, CSRF tokens, session management  
 
+---
+
+![PVEKube Clusters Dashboard]({{ '/assets/clusters-dashboard.png' | relative_url }})
+
+*PVEKube Dashboard — Single-binary Kubernetes cluster management for Proxmox VE.*
+
+**[📸 View Full Application UI Gallery & Screenshots]({{ '/screenshots/' | relative_url }})**
+
+---
+
 ## Quick Start
 
 ### Build

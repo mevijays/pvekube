@@ -20,6 +20,8 @@ navigation:
     url: /architecture/
   - title: Features
     url: /features/
+  - title: Gallery
+    url: /screenshots/
   - title: API Reference
     url: /api-reference/
   - title: Troubleshooting
