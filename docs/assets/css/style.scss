@@ -187,34 +187,54 @@ body {
   margin-top: 1.5rem;
 }
 
-/* Code Blocks */
-pre, code {
+/* Code Blocks & Syntax Highlighting Overrides */
+div.highlighter-rouge,
+.highlight,
+.highlight pre,
+pre.highlight,
+pre {
+  background-color: #0f172a !important;
+  color: #f8fafc !important;
+  border-radius: 8px;
+  padding: 1rem 1.25rem;
+  margin: 1.25rem 0;
+  overflow-x: auto;
   font-family: 'JetBrains Mono', monospace;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  border: 1px solid #1e293b;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
 }
 
-code {
+.highlight pre code,
+pre code {
+  background: transparent !important;
+  color: #f8fafc !important;
+  padding: 0;
+  border-radius: 0;
+}
+
+/* Inline Code */
+:not(pre) > code {
   background-color: #f1f5f9;
-  color: #0f172a;
+  color: #4f46e5;
+  border: 1px solid #e2e8f0;
   padding: 0.2rem 0.4rem;
   border-radius: 4px;
   font-size: 0.875em;
+  font-family: 'JetBrains Mono', monospace;
 }
 
-pre {
-  background-color: var(--code-bg);
-  color: #f8fafc;
-  padding: 1rem 1.25rem;
-  border-radius: 8px;
-  overflow-x: auto;
-  font-size: 0.875rem;
-  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-}
-
-pre code {
-  background: transparent;
-  color: inherit;
-  padding: 0;
-}
+/* Syntax Highlighting Colors for Dark Code Blocks */
+.highlight .c, .highlight .c1, .highlight .ch, .highlight .cm, .highlight .cp, .highlight .cs { color: #94a3b8 !important; font-style: italic; } /* Comments */
+.highlight .k, .highlight .kc, .highlight .kd, .highlight .kn, .highlight .kp, .highlight .kr, .highlight .kt { color: #38bdf8 !important; font-weight: 600; } /* Keywords (Light Blue) */
+.highlight .s, .highlight .s1, .highlight .s2, .highlight .sa, .highlight .sb, .highlight .sc, .highlight .sd, .highlight .se, .highlight .sh, .highlight .si, .highlight .sx { color: #4ade80 !important; } /* Strings (Green) */
+.highlight .nb, .highlight .bp { color: #f472b6 !important; } /* Builtins (Pink) */
+.highlight .nf, .highlight .fm { color: #818cf8 !important; } /* Functions (Indigo) */
+.highlight .m, .highlight .mf, .highlight .mh, .highlight .mi, .highlight .il, .highlight .mo { color: #fbbf24 !important; } /* Numbers (Amber) */
+.highlight .na, .highlight .nv, .highlight .vc, .highlight .vg, .highlight .vi { color: #e2e8f0 !important; } /* Variables/Attributes */
+.highlight .o, .highlight .ow { color: #38bdf8 !important; } /* Operators */
+.highlight .nt { color: #f472b6 !important; } /* HTML/XML tags */
 
 /* Tables */
 table {
