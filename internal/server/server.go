@@ -72,10 +72,11 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /management/kubeconfig", s.requireAuth(s.handleManagementKubeconfig))
 
 	mux.HandleFunc("GET /proxmox", s.requireAuth(s.handleProxmoxPage))
-	mux.HandleFunc("GET /proxmox/status", s.requireAuth(s.handleProxmoxStatus))
+	mux.HandleFunc("GET /proxmox/list", s.requireAuth(s.handleProxmoxList))
 	mux.HandleFunc("POST /proxmox/connect", s.requireAuth(s.handleProxmoxConnect))
-	mux.HandleFunc("POST /proxmox/refresh", s.requireAuth(s.handleProxmoxRefresh))
-	mux.HandleFunc("POST /proxmox/disconnect", s.requireAuth(s.handleProxmoxDisconnect))
+	mux.HandleFunc("GET /proxmox/{id}/detail", s.requireAuth(s.handleProxmoxDetail))
+	mux.HandleFunc("POST /proxmox/{id}/refresh", s.requireAuth(s.handleProxmoxRefresh))
+	mux.HandleFunc("POST /proxmox/{id}/disconnect", s.requireAuth(s.handleProxmoxDisconnect))
 
 	mux.HandleFunc("GET /templates", s.requireAuth(s.handleTemplatesPage))
 	mux.HandleFunc("GET /templates/panel", s.requireAuth(s.handleTemplatesPanel))

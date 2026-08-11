@@ -25,12 +25,18 @@ type builtTemplateView struct {
 
 func (s *Server) handleTemplatesPage(w http.ResponseWriter, r *http.Request) {
 	session := r.Context().Value(ctxSessionKey{}).(string)
+	s.rememberConnOverride(r)
 	ui.Render(w, "templates", map[string]any{"CSRF": s.csrfFor(session)})
 }
 
+// handleTemplatesPanel resolves which connection to show — an explicit
+// ?conn= wins and is remembered for next time (see activeConnection), so
+// switching hosts via the page's <select> is a plain navigation, not a
+// dynamic swap. No connections at all is handled by activeConnection
+// returning sql.ErrNoRows, same as before multi-host existed.
 func (s *Server) handleTemplatesPanel(w http.ResponseWriter, r *http.Request) {
 	session := r.Context().Value(ctxSessionKey{}).(string)
-	conn, err := s.getConnection()
+	conn, err := s.activeConnection(r.URL.Query().Get("conn"))
 	if err != nil {
 		ui.RenderPartial(w, "templates_not_connected", nil)
 		return
@@ -39,6 +45,11 @@ func (s *Server) handleTemplatesPanel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) renderTemplatesPanel(w http.ResponseWriter, ctx context.Context, session string, conn *storedConnection, errMsg string) {
+	conns, connErr := s.listConnections()
+	if connErr != nil {
+		conns = nil
+	}
+
 	client, err := s.proxmoxClientFor(conn)
 	if err != nil {
 		ui.RenderPartial(w, "templates_not_connected", nil)
@@ -50,7 +61,11 @@ func (s *Server) renderTemplatesPanel(w http.ResponseWriter, ctx context.Context
 		defer cancel()
 		snap, err = client.Discover(cctx)
 		if err != nil {
-			ui.RenderPartial(w, "templates_panel", map[string]any{"Error": "Discovery failed: " + err.Error(), "CSRF": s.csrfFor(session), "Flavors": imagebuilder.Flavors, "LinuxOK": runtime.GOOS == "linux", "HostOS": runtime.GOOS})
+			ui.RenderPartial(w, "templates_panel", map[string]any{
+				"Error": "Discovery failed: " + err.Error(), "CSRF": s.csrfFor(session),
+				"Flavors": imagebuilder.Flavors, "LinuxOK": runtime.GOOS == "linux", "HostOS": runtime.GOOS,
+				"Connections": conns, "SelectedConn": conn,
+			})
 			return
 		}
 		s.cacheDiscovery(conn.ID, snap)
@@ -67,6 +82,8 @@ func (s *Server) renderTemplatesPanel(w http.ResponseWriter, ctx context.Context
 		}
 	}
 
+	buildBusy, _ := s.templateBuildInProgress()
+
 	ui.RenderPartial(w, "templates_panel", map[string]any{
 		"Error":    errMsg,
 		"CSRF":     s.csrfFor(session),
@@ -75,7 +92,37 @@ func (s *Server) renderTemplatesPanel(w http.ResponseWriter, ctx context.Context
 		"Built":    built,
 		"LinuxOK":  runtime.GOOS == "linux",
 		"HostOS":   runtime.GOOS,
+		// Connections + SelectedConn back the host <select> at the top of
+		// the panel; every built-template row and every dropdown below it
+		// (node/bridge/storage) is scoped to SelectedConn only — there is
+		// deliberately no cross-host view here, see the design notes in
+		// the multi-host plan.
+		"Connections":  conns,
+		"SelectedConn": conn,
+		// BuildBusy disables the Build button (with an explanatory note)
+		// while a template.build job is already running, ANY host — see
+		// templateBuildInProgress's doc comment for why concurrent builds
+		// aren't safe today.
+		"BuildBusy": buildBusy,
 	})
+}
+
+// templateBuildInProgress reports whether a template.build job is currently
+// pending/running, on ANY connection. internal/imagebuilder's Docker-based
+// Packer build bind-mounts one dataDir-wide directory
+// (imagebuilder.RepoDir) into every build's container and writes per-build
+// files (packer.json, the ISO-override JSON) into that same shared
+// directory — two concurrent builds race on those files regardless of which
+// Proxmox host either one targets. This is a pre-existing bug (nothing ever
+// serialized template.validate/build before multi-host support), but
+// letting an operator pick a different host specifically invites starting a
+// second build "at the same time," so it's fixed alongside this work rather
+// than left as a latent trap. DB-backed rather than an in-process mutex so
+// it survives a restart mid-build correctly reflecting real job state.
+func (s *Server) templateBuildInProgress() (bool, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM jobs WHERE kind = 'template.build' AND status IN ('pending', 'running')`).Scan(&n)
+	return n > 0, err
 }
 
 // templateFormInput is the shared, validated form payload for both the
@@ -135,13 +182,31 @@ type errBadInput string
 
 func (e errBadInput) Error() string { return string(e) }
 
+// formConnection resolves the connection a Templates/Clusters POST is
+// targeting from its hidden "conn" field — set once when the panel was
+// rendered — rather than re-deriving "the active connection" independently
+// mid-request. Re-deriving it would be a real race: app_state's
+// "remembered" host could change between page load and form submit (a
+// second browser tab switching hosts, for instance), silently sending a
+// build or apply to the wrong Proxmox server. An explicit field, like the
+// CSRF token, means what gets submitted is exactly what the operator saw
+// on screen.
+func (s *Server) formConnection(r *http.Request) (*storedConnection, error) {
+	id, err := strconv.ParseInt(r.FormValue("conn"), 10, 64)
+	if err != nil {
+		return nil, errBadInput("missing or invalid connection")
+	}
+	return s.getConnectionByID(id)
+}
+
 func (s *Server) handleTemplatesValidate(w http.ResponseWriter, r *http.Request) {
 	session := r.Context().Value(ctxSessionKey{}).(string)
 	if !s.checkCSRF(r, session) {
 		http.Error(w, "bad csrf", http.StatusForbidden)
 		return
 	}
-	conn, err := s.getConnection()
+	r.ParseForm()
+	conn, err := s.formConnection(r)
 	if err != nil {
 		ui.RenderPartial(w, "templates_not_connected", nil)
 		return
@@ -170,11 +235,22 @@ func (s *Server) handleTemplatesBuild(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad csrf", http.StatusForbidden)
 		return
 	}
-	conn, err := s.getConnection()
+	r.ParseForm()
+	conn, err := s.formConnection(r)
 	if err != nil {
 		ui.RenderPartial(w, "templates_not_connected", nil)
 		return
 	}
+
+	// Reject a second concurrent build outright rather than let it race with
+	// the first — see templateBuildInProgress's doc comment. Checked before
+	// parsing/validating the rest of the form so the operator finds out
+	// immediately, not after a VMID has already been allocated.
+	if busy, _ := s.templateBuildInProgress(); busy {
+		s.renderTemplatesPanel(w, r.Context(), session, conn, "a template build is already in progress — wait for it to finish before starting another")
+		return
+	}
+
 	input, err := s.parseTemplateForm(r, conn)
 	if err != nil {
 		s.renderTemplatesPanel(w, r.Context(), session, conn, err.Error())
@@ -258,9 +334,15 @@ func (s *Server) handleTemplatesDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, err := s.getConnection()
-	if err != nil || conn.ID != connID {
-		http.Error(w, "template's Proxmox connection is no longer active", http.StatusBadRequest)
+	// Look up the CONNECTION THIS TEMPLATE ACTUALLY BELONGS TO, not "whatever
+	// host happens to be active right now" — those are no longer the same
+	// thing once more than one connection exists. The old single-connection
+	// version of this check (comparing against s.getConnection()) would
+	// incorrectly reject deleting a template that belongs to any host other
+	// than the currently-selected one.
+	conn, err := s.getConnectionByID(connID)
+	if err != nil {
+		http.Error(w, "this template's Proxmox connection has been disconnected — reconnect it to delete this template's VM", http.StatusBadRequest)
 		return
 	}
 	client, err := s.proxmoxClientFor(conn)

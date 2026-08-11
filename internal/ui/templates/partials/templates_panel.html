@@ -6,6 +6,19 @@
   </div>
   {{end}}
 
+  {{if .Connections}}
+  <div>
+    <label class="mb-1 block text-sm font-medium text-slate-300">Proxmox host</label>
+    <select onchange="location.href='/templates?conn='+this.value"
+            class="w-full max-w-md rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500">
+      {{range .Connections}}
+      <option value="{{.ID}}" {{if eq .ID $.SelectedConn.ID}}selected{{end}}>{{.URL}}{{if .IsPrimary}} (primary){{end}}</option>
+      {{end}}
+    </select>
+    <p class="mt-1 text-xs text-slate-500">Everything below — node/network/storage options and built templates — is scoped to this host.</p>
+  </div>
+  {{end}}
+
   {{if .LinuxOK | not}}
   <div class="flex items-start gap-2 rounded-lg border border-amber-900 bg-amber-950/20 px-3 py-2 text-sm text-amber-200">
     <i class="fa fa-exclamation-triangle mt-0.5"></i>
@@ -15,8 +28,15 @@
 
   <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
     <h2 class="mb-4 text-sm font-semibold uppercase tracking-wide text-slate-400">Build a new template</h2>
+    {{if .BuildBusy}}
+    <div class="mb-4 flex items-start gap-2 rounded-lg border border-amber-900 bg-amber-950/20 px-3 py-2 text-sm text-amber-200">
+      <i class="fa fa-info-circle mt-0.5"></i>
+      <span>A template build is already running (on this host or another) — Build is disabled until it finishes. Validate still works.</span>
+    </div>
+    {{end}}
     <form class="space-y-4">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="conn" value="{{.SelectedConn.ID}}">
       <div class="grid gap-4 sm:grid-cols-2">
         <div>
           <label class="mb-1 block text-sm font-medium text-slate-300">Operating system</label>
@@ -63,8 +83,8 @@
         </button>
         <button type="button" hx-post="/templates/build" hx-target="#templates-panel" hx-swap="innerHTML" hx-include="closest form"
                 hx-confirm="This will allocate a VMID and run a real 20-35 minute Packer build on Proxmox. Continue?"
-                data-loading-text="Starting build..."
-                class="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-brand-700">
+                data-loading-text="Starting build..." {{if .BuildBusy}}disabled{{end}}
+                class="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:opacity-50">
           <i class="fa fa-cogs mr-1.5"></i>Build template (20-35 min)
         </button>
       </div>

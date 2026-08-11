@@ -11,12 +11,20 @@
       </div>
     </div>
     <div class="flex gap-2">
-      <button hx-post="/proxmox/refresh" hx-target="#proxmox-panel" hx-swap="innerHTML"
+      <!--
+        Refresh targets THIS connection's own detail div (it's already
+        rendering inside #conn-detail-{ID}) — swapping #proxmox-panel here
+        would blow away every other card's expanded state on the page too.
+        Disconnect, by contrast, removes the whole card from the list, so it
+        targets #proxmox-panel same as the list-level disconnect button.
+      -->
+      <button hx-post="/proxmox/{{.Conn.ID}}/refresh" hx-target="#conn-detail-{{.Conn.ID}}" hx-swap="innerHTML"
               class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-300 hover:bg-slate-800">
         <i class="fa fa-refresh mr-1.5"></i>Refresh
       </button>
-      <button hx-post="/proxmox/disconnect" hx-target="#proxmox-panel" hx-swap="innerHTML"
-              hx-confirm="Remove this Proxmox connection? Templates and clusters already created won't be deleted."
+      <button hx-post="/proxmox/{{.Conn.ID}}/disconnect" hx-target="#proxmox-panel" hx-swap="innerHTML"
+              hx-vals='{"csrf": "{{$.CSRF}}"}'
+              hx-confirm="Disconnect {{.Conn.URL}}? Real VMs on Proxmox are NOT touched — only PVEKube's local record of this host, and any templates/clusters it tracked here, are removed.{{if .Conn.IsPrimary}} This is your PRIMARY connection: disconnecting it also permanently stops credential refresh for clusters created before multi-host support (e.g. myk8s) — they'll keep running, but PVEKube can no longer re-sync their credentials.{{end}}"
               class="rounded-lg border border-red-900 px-3 py-1.5 text-sm text-red-300 hover:bg-red-950/40">
         Disconnect
       </button>

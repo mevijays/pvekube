@@ -67,6 +67,28 @@ func snapshotStub(capacityKnown bool) any {
 	}
 }
 
+// connStub mirrors server.storedConnection closely enough to exercise
+// proxmox_list/proxmox_connected/proxmox_detail_error — it needs to be a
+// named type (not an anonymous struct literal like the other stubs in this
+// file) because those partials call .Conn.TokenUser, a method, and Go
+// template execution invokes methods via reflection same as fields; an
+// anonymous struct can't carry one.
+type connStub struct {
+	ID        int64
+	URL       string
+	TokenID   string
+	IsPrimary bool
+}
+
+func (c connStub) TokenUser() string { return "capmox@pve" }
+
+// permStub mirrors proxmox.PermissionResult (the .Perms range target in
+// proxmox_connected.html).
+type permStub struct {
+	Name, Privilege, FixCommand string
+	OK, Probed                  bool
+}
+
 // templatesStub mirrors server.templateOptionView.
 func templatesStub() any {
 	return []struct {
@@ -93,6 +115,13 @@ func TestPartialsRenderWithHandlerData(t *testing.T) {
 				"Snapshot":  snapshotStub(true),
 				"Templates": templatesStub(),
 				"Defaults":  defaultsStub(),
+				// A missing map key here silently renders as an empty
+				// string rather than erroring — confirmed by direct
+				// inspection, not assumption — so these fields MUST be set
+				// explicitly for this test to actually verify the hidden
+				// conn field and host <select>, not just fail to crash.
+				"Connections":  []connStub{{ID: 1, URL: "https://172.16.1.101:8006", IsPrimary: true}, {ID: 2, URL: "https://172.16.1.101:8006", IsPrimary: false}},
+				"SelectedConn": connStub{ID: 2, URL: "https://172.16.1.101:8006", IsPrimary: false},
 			},
 			mustContain: []string{
 				"csrf-token-here",
@@ -104,6 +133,10 @@ func TestPartialsRenderWithHandlerData(t *testing.T) {
 				// Capacity table: 131072 MiB -> 128.0, 98304 -> 96.0,
 				// 32768 -> 32.0. Guards both the gib filter and the wiring.
 				"128.0 GiB", "96.0 GiB", "32.0 GiB",
+				// The create form must submit against the SAME connection
+				// selected in the dropdown, not a stale/default one.
+				`name="conn" value="2"`,
+				`value="2" selected`,
 			},
 		},
 		{
@@ -113,9 +146,11 @@ func TestPartialsRenderWithHandlerData(t *testing.T) {
 			partial: "clusters_panel",
 			data: map[string]any{
 				"Error": "", "CSRF": "csrf-token-here",
-				"Snapshot":  snapshotStub(false),
-				"Templates": templatesStub(),
-				"Defaults":  defaultsStub(),
+				"Snapshot":     snapshotStub(false),
+				"Templates":    templatesStub(),
+				"Defaults":     defaultsStub(),
+				"Connections":  []connStub{{ID: 1, URL: "https://172.16.1.101:8006", IsPrimary: true}},
+				"SelectedConn": connStub{ID: 1, URL: "https://172.16.1.101:8006", IsPrimary: true},
 			},
 			mustContain:    []string{"Capacity not in this cached snapshot"},
 			mustNotContain: []string{"128.0 GiB", "0.0 GiB"},
@@ -131,6 +166,120 @@ func TestPartialsRenderWithHandlerData(t *testing.T) {
 			mustContain: []string{"Discovery failed: boom"},
 		},
 		{
+			name:    "proxmox_list/multiple-hosts",
+			partial: "proxmox_list",
+			data: map[string]any{
+				"CSRF": "csrf-token-here",
+				"Connections": []connStub{
+					{ID: 1, URL: "https://172.16.1.101:8006", TokenID: "capmox@pve!capi", IsPrimary: true},
+					{ID: 2, URL: "https://172.16.1.101:8006", TokenID: "capmox@pve!second", IsPrimary: false},
+				},
+			},
+			mustContain: []string{
+				"csrf-token-here",
+				"primary", // badge on connection 1
+				`/proxmox/1/disconnect`, `/proxmox/2/disconnect`,
+				`/proxmox/1/detail`, `/proxmox/2/detail`,
+				"conn-detail-1", "conn-detail-2",
+			},
+		},
+		{
+			// Empty state must still render the Add-host form — this is
+			// the very first screen a fresh install shows.
+			name:        "proxmox_list/no-connections",
+			partial:     "proxmox_list",
+			data:        map[string]any{"CSRF": "csrf-token-here", "Connections": nil},
+			mustContain: []string{"No Proxmox hosts connected yet", "csrf-token-here", "Add Proxmox host"},
+		},
+		{
+			name:    "proxmox_connected/ok",
+			partial: "proxmox_connected",
+			data: map[string]any{
+				"Conn": connStub{ID: 7, URL: "https://172.16.1.101:8006", TokenID: "capmox@pve!capi", IsPrimary: true},
+				"CSRF": "csrf-token-here",
+				"Snapshot": map[string]any{
+					"Version": "9.1.4", "Nodes": nil, "Bridges": nil, "Storage": nil, "NextVMID": 115,
+				},
+				"Perms": []permStub{{Name: "Authentication", Privilege: "(valid token)", OK: true, Probed: true}},
+			},
+			mustContain: []string{
+				"csrf-token-here",
+				`/proxmox/7/refresh`, `#conn-detail-7`,
+				`/proxmox/7/disconnect`,
+				// The primary-specific disconnect warning must actually be
+				// present for a primary connection, not just the generic one.
+				"PRIMARY connection",
+			},
+		},
+		{
+			// Same partial, non-primary connection: the sharper warning
+			// must NOT appear — asserting its absence is what would have
+			// caught a copy-paste "always show this" mistake.
+			name:    "proxmox_connected/non-primary",
+			partial: "proxmox_connected",
+			data: map[string]any{
+				"Conn": connStub{ID: 8, URL: "https://172.16.1.101:8006", TokenID: "capmox@pve!second", IsPrimary: false},
+				"CSRF": "csrf-token-here",
+				"Snapshot": map[string]any{
+					"Version": "9.1.4", "Nodes": nil, "Bridges": nil, "Storage": nil, "NextVMID": 116,
+				},
+				"Perms": []permStub{{Name: "Authentication", Privilege: "(valid token)", OK: true, Probed: true}},
+			},
+			mustContain:    []string{"csrf-token-here", `/proxmox/8/refresh`, `/proxmox/8/disconnect`},
+			mustNotContain: []string{"PRIMARY connection"},
+		},
+		{
+			// templates_panel had zero test coverage before this — exactly
+			// the kind of gap where a nil SelectedConn or a forgotten field
+			// would render "<no value>" or panic on nil-pointer field
+			// access, undetected until someone actually opened the page.
+			name:    "templates_panel/multi-host",
+			partial: "templates_panel",
+			data: map[string]any{
+				"CSRF":    "csrf-token-here",
+				"Flavors": []struct{ ID, Label string }{{ID: "ubuntu-2404", Label: "Ubuntu 24.04"}},
+				"Snapshot": map[string]any{
+					"Nodes": nil, "Bridges": nil, "Storage": nil,
+				},
+				"Built":        nil,
+				"LinuxOK":      true,
+				"HostOS":       "linux",
+				"Connections":  []connStub{{ID: 1, URL: "https://172.16.1.101:8006", IsPrimary: true}, {ID: 2, URL: "https://172.16.1.101:8006", IsPrimary: false}},
+				"SelectedConn": connStub{ID: 2, URL: "https://172.16.1.101:8006", IsPrimary: false},
+				"BuildBusy":    false,
+			},
+			mustContain: []string{
+				"csrf-token-here",
+				`name="conn" value="2"`, // the hidden field must carry SelectedConn, not just any connection
+				`value="2" selected`,    // and the dropdown must show it as the chosen option
+			},
+			mustNotContain: []string{"already running", "<no value>"},
+		},
+		{
+			// BuildBusy must actually disable the button and explain why —
+			// this is the guard against the imagebuilder concurrent-build
+			// race (see templateBuildInProgress's doc comment).
+			name:    "templates_panel/build-busy",
+			partial: "templates_panel",
+			data: map[string]any{
+				"CSRF": "csrf-token-here", "Flavors": []struct{ ID, Label string }{},
+				"Snapshot":     map[string]any{},
+				"Connections":  []connStub{{ID: 1, URL: "https://172.16.1.101:8006", IsPrimary: true}},
+				"SelectedConn": connStub{ID: 1, URL: "https://172.16.1.101:8006", IsPrimary: true},
+				"BuildBusy":    true,
+			},
+			mustContain: []string{"already running", "disabled"},
+		},
+		{
+			name:    "proxmox_detail_error/ok",
+			partial: "proxmox_detail_error",
+			data: map[string]any{
+				"Conn":  connStub{ID: 3, URL: "https://172.16.1.101:8006"},
+				"Error": "Connected before, but discovery failed now: dial tcp: timeout",
+			},
+			mustContain: []string{"dial tcp: timeout", `/proxmox/3/refresh`, `#conn-detail-3`},
+		},
+		{
 			name:    "cluster_preview/ok",
 			partial: "cluster_preview",
 			data: map[string]any{
@@ -142,8 +291,12 @@ func TestPartialsRenderWithHandlerData(t *testing.T) {
 				"RegistryUsername": "u", "RegistryPassword": "p",
 				"RegistryInsecure": false,
 				"VMSSHKeys":        "ssh-ed25519 AAAAC3Nz",
+				"ConnID":           int64(5),
 			},
-			mustContain: []string{"csrf-token-here", "registry.internal.lan:5000"},
+			// The apply form must carry the SAME connection the manifest was
+			// generated against — see formConnection's doc comment
+			// (handlers_clusters.go) for the race this prevents.
+			mustContain: []string{"csrf-token-here", "registry.internal.lan:5000", `name="conn" value="5"`},
 		},
 		{
 			name:        "cluster_preview/error",

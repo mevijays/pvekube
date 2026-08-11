@@ -24,6 +24,13 @@
   <form hx-post="/clusters/apply" hx-target="#clusters-panel" hx-swap="outerHTML"
         hx-confirm="Apply this manifest and start launching real VMs on Proxmox?">
     <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <!--
+      Carries the connection this manifest was actually generated against
+      into handleClustersApply — NOT whatever's currently "active", which
+      could have changed in another tab since Preview was clicked. See
+      formConnection's doc comment (handlers_clusters.go).
+    -->
+    <input type="hidden" name="conn" value="{{.ConnID}}">
     <input type="hidden" name="name" value="{{.ClusterName}}">
     <input type="hidden" name="template_id" value="{{.TemplateID}}">
     <input type="hidden" name="cni" value="{{.CNI}}">

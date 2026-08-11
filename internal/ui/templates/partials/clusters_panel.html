@@ -6,6 +6,19 @@
   </div>
   {{end}}
 
+  {{if .Connections}}
+  <div>
+    <label class="mb-1 block text-sm font-medium text-slate-300">Proxmox host</label>
+    <select onchange="location.href='/clusters?conn='+this.value"
+            class="w-full max-w-md rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500">
+      {{range .Connections}}
+      <option value="{{.ID}}" {{if eq .ID $.SelectedConn.ID}}selected{{end}}>{{.URL}}{{if .IsPrimary}} (primary){{end}}</option>
+      {{end}}
+    </select>
+    <p class="mt-1 text-xs text-slate-500">The clusters list, capacity table, node placement, and template picker below are all scoped to this host.</p>
+  </div>
+  {{end}}
+
   <div>
     <h2 class="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Clusters</h2>
     <div hx-get="/clusters/list" hx-trigger="load" hx-swap="outerHTML">
@@ -35,6 +48,7 @@
     </div>
     <form id="cluster-form" class="space-y-6">
       <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <input type="hidden" name="conn" value="{{.SelectedConn.ID}}">
 
       {{if .Snapshot.Nodes}}
       <div class="rounded-xl border border-slate-800 bg-slate-900/40 p-4">
@@ -225,7 +239,7 @@
             host to build this one without a registry — the saved values stay for next time either way.
           </p>
           <button type="button" hx-post="/clusters/defaults/clear" hx-target="#clusters-panel" hx-swap="outerHTML"
-                  hx-vals='{"csrf": "{{$.CSRF}}"}'
+                  hx-vals='{"csrf": "{{$.CSRF}}", "conn": "{{$.SelectedConn.ID}}"}'
                   hx-confirm="Forget the saved SSH keys and registry settings? The next cluster form will come up blank."
                   class="flex-none rounded-lg border border-slate-700 px-2.5 py-1 text-xs text-slate-300 hover:bg-slate-800">
             <i class="fa fa-eraser mr-1"></i>Forget

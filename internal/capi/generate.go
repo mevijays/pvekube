@@ -8,7 +8,6 @@ package capi
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
@@ -74,6 +73,14 @@ type GenerateInput struct {
 	// every machine template — see InjectRegistryTrust. Zero value means no
 	// registry and leaves the manifest untouched.
 	Registry RegistryConfig
+
+	// ConnectionID identifies which Proxmox connection this cluster targets
+	// — used to inject spec.credentialsRef into the generated ProxmoxCluster
+	// document (see InjectCredentialsRef in credentials.go) so the cluster
+	// resolves its own dedicated credentials Secret rather than depending on
+	// CAPMOX's shared global fallback, which is only ever correct for one
+	// connection at a time.
+	ConnectionID int64
 }
 
 func (in GenerateInput) env() []string {
@@ -187,59 +194,75 @@ func Generate(ctx context.Context, dataDir, binDir string, in GenerateInput) (st
 		return "", err
 	}
 
+	// Point the cluster at its own connection's dedicated credentials
+	// Secret rather than CAPMOX's shared global fallback — see
+	// credentials.go's package doc comment for why that matters once more
+	// than one Proxmox host is in play. Unlike registry trust this is never
+	// a no-op: every cluster gets credentialsRef now, regardless of which
+	// connection it targets.
+	manifest, err = InjectCredentialsRef(manifest, in.ConnectionID)
+	if err != nil {
+		return "", err
+	}
+
 	return manifest, nil
 }
 
-// EnsureCredentialsStep creates or updates the capmox-manager-credentials
-// Secret that CAPMOX's controller uses for any ProxmoxCluster that doesn't
-// set its own credentialsRef (the default flavor's cluster-template.yaml
-// never sets one — verified by reading the real template). That Secret is
-// defined INSIDE infrastructure-components.yaml, with its values coming
-// from clusterctl init-time env vars — which may run before a Proxmox
-// connection even exists in PVEKube, leaving it empty.
+// EnsureConnectionCredentialsSecret creates or updates the dedicated
+// credentials Secret one Proxmox connection's clusters point at via
+// spec.credentialsRef (see credentials.go). This needs NO controller
+// restart: CAPMOX reads a credentialsRef Secret live via the Kubernetes
+// client on every single reconcile (verified against CAPMOX v0.9.0's
+// pkg/scope/cluster.go directly), so an update here takes effect on the
+// next reconcile of every cluster referencing it — typically seconds. This
+// is now the ONLY credentials path PVEKube writes to; see ClusterConnection
+// (below) for why the old global-Secret-plus-restart mechanism was removed
+// entirely rather than kept as a "legacy" fallback.
 //
-// Patching the Secret alone is NOT enough to fix a running controller: its
-// Deployment wires PROXMOX_URL/TOKEN/SECRET in via secretKeyRef, which
-// Kubernetes resolves into the container's environment once at pod start,
-// not on every reconcile (confirmed by testing — patching without a
-// restart left the controller reporting stale "no credentials" errors
-// indefinitely). So this step also rolls the controller Deployment after
-// updating the Secret, which is what actually makes it pick up new values.
-func EnsureCredentialsStep(dataDir, binDir, proxmoxURL, tokenID, secret string) func(*jobs.Ctx) error {
+// Lives in the `default` namespace (not capmox-system, where the legacy
+// global Secret lives) — same namespace as the ProxmoxCluster objects that
+// reference it, which lets InjectCredentialsRef omit credentialsRef's
+// optional namespace field entirely (CAPMOX defaults a missing one to the
+// referencing object's own namespace).
+//
+// insecureTLS is written explicitly as the Secret's "insecure" key, always
+// — CAPMOX defaults InsecureSkipVerify to TRUE when that key is absent
+// entirely ("pre-v0.7 backward-compat behavior", per its own source
+// comment), so omitting it would silently disable TLS verification
+// regardless of what the operator configured for this connection.
+//
+// One Secret is shared by every cluster on this connection, not owned by
+// any single one — DeleteClusterSpec (lifecycle.go) must never delete it.
+// This is also safe on CAPMOX's side, not just PVEKube's: verified live
+// (create a cluster, delete it, watch the Secret) and by reading
+// internal/controller/proxmoxcluster_controller.go directly —
+// reconcileNormalCredentialsSecret adds an owner reference PER referencing
+// ProxmoxCluster (EnsureOwnerRef, additive) and its delete counterpart only
+// removes CAPMOX's finalizer once len(ownerReferences) <= 1, at which point
+// Kubernetes' own garbage collection removes the Secret. A Secret shared by
+// two clusters survives either one being deleted; it's only actually
+// removed once the last referencing cluster is gone.
+func EnsureConnectionCredentialsSecret(dataDir, binDir string, connID int64, url, tokenID, secret string, insecureTLS bool) func(*jobs.Ctx) error {
 	return func(c *jobs.Ctx) error {
 		kubectlBin := filepath.Join(binDir, "kubectl")
 		kcPath := bootstrap.KubeconfigPath(dataDir)
-
-		// Skip the patch+restart entirely if the Secret already holds these
-		// exact values — the common case once a cluster or two has already
-		// been applied with the same Proxmox connection. A restart briefly
-		// interrupts reconciliation for every cluster on this management
-		// cluster, not just the one being applied now, so it's worth
-		// avoiding when nothing actually changed.
-		if current, err := exec.Command(kubectlBin, "--kubeconfig", kcPath, "get", "secret", "capmox-manager-credentials",
-			"-n", "capmox-system", "-o",
-			`jsonpath={.data.url}{"\n"}{.data.token}{"\n"}{.data.secret}`).Output(); err == nil {
-			want := base64.StdEncoding.EncodeToString([]byte(proxmoxURL)) + "\n" +
-				base64.StdEncoding.EncodeToString([]byte(tokenID)) + "\n" +
-				base64.StdEncoding.EncodeToString([]byte(secret))
-			if strings.TrimSpace(string(current)) == want {
-				c.Logf("capmox-manager-credentials already up to date, skipping controller restart")
-				return nil
-			}
+		name := connectionCredentialsSecretName(connID)
+		insecureVal := "false"
+		if insecureTLS {
+			insecureVal = "true"
 		}
 
-		// create --dry-run=client -o yaml | apply -f - is the standard
-		// kubectl idiom for "create or update" without a separate read.
 		var manifest bytes.Buffer
-		createCmd := exec.Command(kubectlBin, "--kubeconfig", kcPath, "create", "secret", "generic", "capmox-manager-credentials",
-			"-n", "capmox-system",
-			"--from-literal=url="+proxmoxURL,
+		createCmd := exec.Command(kubectlBin, "--kubeconfig", kcPath, "create", "secret", "generic", name,
+			"-n", "default",
+			"--from-literal=url="+url,
 			"--from-literal=token="+tokenID,
 			"--from-literal=secret="+secret,
+			"--from-literal=insecure="+insecureVal,
 			"--dry-run=client", "-o", "yaml")
 		createCmd.Stdout = &manifest
 		if err := createCmd.Run(); err != nil {
-			return fmt.Errorf("rendering credentials secret: %w", err)
+			return fmt.Errorf("rendering %s: %w", name, err)
 		}
 
 		applyCmd := exec.Command(kubectlBin, "--kubeconfig", kcPath, "apply", "-f", "-")
@@ -247,18 +270,9 @@ func EnsureCredentialsStep(dataDir, binDir, proxmoxURL, tokenID, secret string) 
 		var out bytes.Buffer
 		applyCmd.Stdout, applyCmd.Stderr = &out, &out
 		if err := applyCmd.Run(); err != nil {
-			return fmt.Errorf("applying credentials secret: %w\n%s", err, out.String())
+			return fmt.Errorf("applying %s: %w\n%s", name, err, out.String())
 		}
-		c.Logf("capmox-manager-credentials Secret is up to date")
-
-		if err := runner.Run(c, c, "", nil, kubectlBin, "--kubeconfig", kcPath,
-			"rollout", "restart", "deployment/capmox-controller-manager", "-n", "capmox-system"); err != nil {
-			return fmt.Errorf("restarting capmox controller to pick up credentials: %w", err)
-		}
-		if err := runner.Run(c, c, "", nil, kubectlBin, "--kubeconfig", kcPath,
-			"rollout", "status", "deployment/capmox-controller-manager", "-n", "capmox-system", "--timeout=60s"); err != nil {
-			return fmt.Errorf("waiting for capmox controller restart: %w", err)
-		}
+		c.Logf("%s Secret is up to date (no controller restart needed — credentialsRef reads it live)", name)
 		return nil
 	}
 }
@@ -379,15 +393,56 @@ func installCilium(c *jobs.Ctx, dataDir, binDir, clusterName string) error {
 	return runner.Run(c, c, "", nil, ciliumBin, "install", "--kubeconfig", kcPath)
 }
 
+// ClusterConnection bundles the Proxmox connection identity and raw
+// credentials ApplySpec needs to sync into that connection's dedicated
+// credentials Secret (named by connection ID, referenced by the manifest's
+// ProxmoxCluster via credentialsRef — see Generate/InjectCredentialsRef).
+//
+// IsPrimary is informational only (drives the "(primary)" badge in the UI)
+// — it does NOT change what ApplySpec does. It used to: an earlier version
+// of this function additionally called EnsureCredentialsStep for the
+// primary connection, to keep pre-credentialsRef clusters working. That was
+// removed after finding, against a real cluster, that it actively breaks
+// credentialsRef for EVERY cluster, not just legacy ones: CAPMOX's
+// controller builds one shared "global fallback" Proxmox client at startup
+// from whatever EnsureCredentialsStep last wrote to
+// capmox-manager-credentials, and per CAPMOX's own source
+// (cmd/main.go:setupProxmoxClient, pkg/scope/cluster.go:NewClusterScope) —
+// that global client takes priority over credentialsRef UNCONDITIONALLY
+// whenever it's non-nil, for every ProxmoxCluster regardless of whether it
+// has a valid credentialsRef of its own. So the moment any primary-
+// connection apply ran EnsureCredentialsStep, EVERY cluster silently
+// stopped using its own credentialsRef and started reconciling through
+// whatever host the global Secret pointed at instead — the actual cause of
+// a real "cannot find node with name X" failure this was diagnosed from,
+// on a cluster whose credentialsRef was entirely correct. CAPMOX's
+// setupProxmoxClient explicitly documents empty env vars as the supported
+// way to force credentialsRef-only routing ("so the proxmoxcontroller can
+// create the client later from spec.credentialsRef"), so
+// capmox-manager-credentials is now kept empty and this function never
+// writes to it — every cluster, primary connection or not, resolves its
+// own credentials from its own Secret, which is what "isolated per-
+// connection credentials" was supposed to mean in the first place.
+type ClusterConnection struct {
+	ID          int64
+	URL         string
+	TokenID     string
+	Secret      string
+	InsecureTLS bool
+	IsPrimary   bool
+}
+
 // ApplySpec wraps ApplyStep as a job, for the standard job-engine/SSE-progress
-// UI pattern used everywhere else in PVEKube. Proxmox credentials are
-// re-synced to the management cluster first — see EnsureCredentialsStep.
-// Any selected post-provision addons (metrics-server, Istio, MetalLB) are
-// installed last, after CNI, so they land on a cluster that already has pod
-// networking.
-func ApplySpec(clusterName, dataDir, binDir, proxmoxURL, tokenID, secret, manifestYAML string, cni CNIFlavor, addons AddonSelection, registry RegistryConfig) *jobs.Spec {
+// UI pattern used everywhere else in PVEKube. The connection's own
+// credentials Secret is always synced first — before kubectl apply, since
+// the manifest's ProxmoxCluster already references it via credentialsRef
+// and CAPMOX would otherwise reconcile against a Secret that doesn't exist
+// yet. Any selected post-provision addons (metrics-server, Istio, MetalLB)
+// are installed last, after CNI, so they land on a cluster that already has
+// pod networking.
+func ApplySpec(clusterName, dataDir, binDir string, conn ClusterConnection, manifestYAML string, cni CNIFlavor, addons AddonSelection, registry RegistryConfig) *jobs.Spec {
 	spec := jobs.NewSpec("cluster.apply", "Apply cluster "+clusterName).
-		Step("Sync Proxmox credentials", EnsureCredentialsStep(dataDir, binDir, proxmoxURL, tokenID, secret)).
+		Step("Sync connection credentials", EnsureConnectionCredentialsSecret(dataDir, binDir, conn.ID, conn.URL, conn.TokenID, conn.Secret, conn.InsecureTLS)).
 		Step("kubectl apply", ApplyStep(dataDir, binDir, manifestYAML)).
 		Step("Install CNI", EnsureCNIStep(dataDir, binDir, clusterName, cni)).
 		Step("Wait for nodes & CNI readiness", WaitForNodesReadyStep(dataDir, binDir, clusterName))

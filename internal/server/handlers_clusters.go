@@ -32,6 +32,7 @@ type clusterListView struct {
 
 func (s *Server) handleClustersPage(w http.ResponseWriter, r *http.Request) {
 	session := r.Context().Value(ctxSessionKey{}).(string)
+	s.rememberConnOverride(r)
 	ui.Render(w, "clusters", map[string]any{"CSRF": s.csrfFor(session)})
 }
 
@@ -43,7 +44,8 @@ func (s *Server) handleClustersDefaultsClear(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "bad csrf", http.StatusForbidden)
 		return
 	}
-	conn, err := s.getConnection()
+	r.ParseForm()
+	conn, err := s.formConnection(r)
 	if err != nil {
 		ui.RenderPartial(w, "clusters_not_connected", nil)
 		return
@@ -52,9 +54,13 @@ func (s *Server) handleClustersDefaultsClear(w http.ResponseWriter, r *http.Requ
 	s.renderClustersPanel(w, r.Context(), session, conn, "")
 }
 
+// handleClustersPanel resolves which connection's clusters/capacity/templates
+// to show exactly the way Templates does — an explicit ?conn= wins and is
+// remembered for next time (activeConnection), so the host <select> at the
+// top of the panel is a plain navigation, not a dynamic swap.
 func (s *Server) handleClustersPanel(w http.ResponseWriter, r *http.Request) {
 	session := r.Context().Value(ctxSessionKey{}).(string)
-	conn, err := s.getConnection()
+	conn, err := s.activeConnection(r.URL.Query().Get("conn"))
 	if err != nil {
 		ui.RenderPartial(w, "clusters_not_connected", nil)
 		return
@@ -63,6 +69,11 @@ func (s *Server) handleClustersPanel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) renderClustersPanel(w http.ResponseWriter, ctx context.Context, session string, conn *storedConnection, errMsg string) {
+	conns, connErr := s.listConnections()
+	if connErr != nil {
+		conns = nil
+	}
+
 	client, err := s.proxmoxClientFor(conn)
 	if err != nil {
 		ui.RenderPartial(w, "clusters_not_connected", nil)
@@ -74,7 +85,10 @@ func (s *Server) renderClustersPanel(w http.ResponseWriter, ctx context.Context,
 	defer cancel()
 	snap, err := client.Discover(cctx)
 	if err != nil {
-		ui.RenderPartial(w, "clusters_panel", map[string]any{"Error": "Discovery failed: " + err.Error(), "CSRF": s.csrfFor(session), "Defaults": s.loadClusterDefaults()})
+		ui.RenderPartial(w, "clusters_panel", map[string]any{
+			"Error": "Discovery failed: " + err.Error(), "CSRF": s.csrfFor(session), "Defaults": s.loadClusterDefaults(),
+			"Connections": conns, "SelectedConn": conn,
+		})
 		return
 	}
 	s.cacheDiscovery(conn.ID, snap)
@@ -87,6 +101,12 @@ func (s *Server) renderClustersPanel(w http.ResponseWriter, ctx context.Context,
 		"Snapshot":  snap,
 		"Templates": templates,
 		"Defaults":  s.loadClusterDefaults(),
+		// Connections + SelectedConn back the host <select>; capacity table,
+		// AllowedNodes checkboxes, and the template dropdown are all scoped
+		// to SelectedConn only — same "no cross-host view" design as
+		// Templates, for the same consistency reasons.
+		"Connections":  conns,
+		"SelectedConn": conn,
 	})
 }
 
@@ -98,7 +118,11 @@ func (s *Server) renderClustersPanel(w http.ResponseWriter, ctx context.Context,
 // handleClusterStatus, so a cluster nobody had clicked into would show
 // "provisioning" forever even after it finished.
 func (s *Server) handleClustersList(w http.ResponseWriter, r *http.Request) {
-	conn, err := s.getConnection()
+	// No ?conn= forwarding needed here: this loads via hx-get="load" from
+	// inside clusters_panel.html, which has already resolved+remembered the
+	// active connection (via handleClustersPanel/rememberConnOverride) by
+	// the time this fires — same pattern as Templates.
+	conn, err := s.activeConnection("")
 	if err != nil {
 		ui.RenderPartial(w, "clusters_list", map[string]any{"Clusters": nil})
 		return
@@ -207,7 +231,11 @@ func (s *Server) parseClusterForm(r *http.Request, connID int64) (clusterForm, e
 			Host:      capi.NormalizeRegistryHost(r.FormValue("registry_host")),
 			CACertPEM: strings.TrimSpace(r.FormValue("registry_ca_cert")),
 			Username:  strings.TrimSpace(r.FormValue("registry_username")),
-			Password:  r.FormValue("registry_password"),
+			// Trimmed for the same reason the Proxmox connection secret is
+			// (handlers_proxmox.go handleProxmoxConnect) — a pasted trailing
+			// space is invisible in the form but breaks the registry
+			// authentication header built from this value later.
+			Password: strings.TrimSpace(r.FormValue("registry_password")),
 		},
 	}
 	if f.name == "" {
@@ -292,7 +320,8 @@ func (f clusterForm) ipPlan() ipplan.Plan {
 }
 
 func (s *Server) handleClustersCheckIP(w http.ResponseWriter, r *http.Request) {
-	conn, err := s.getConnection()
+	r.ParseForm()
+	conn, err := s.formConnection(r)
 	if err != nil {
 		http.Error(w, "not connected", http.StatusBadRequest)
 		return
@@ -308,7 +337,8 @@ func (s *Server) handleClustersCheckIP(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleClustersPreview(w http.ResponseWriter, r *http.Request) {
 	session := r.Context().Value(ctxSessionKey{}).(string)
-	conn, err := s.getConnection()
+	r.ParseForm()
+	conn, err := s.formConnection(r)
 	if err != nil {
 		http.Error(w, "not connected", http.StatusBadRequest)
 		return
@@ -335,7 +365,7 @@ func (s *Server) handleClustersPreview(w http.ResponseWriter, r *http.Request) {
 		ControlPlaneEndpointIP: f.controlPlaneEndpoint, NodeIPRange: f.nodeIPRange,
 		Gateway: f.gateway, IPPrefix: f.ipPrefix, DNSServers: f.dnsServers, Bridge: f.bridge,
 		BootVolumeSizeGB: f.bootVolumeSize, NumSockets: f.numSockets, NumCores: f.numCores, MemoryMiB: f.memoryMiB,
-		Registry: f.registry,
+		Registry: f.registry, ConnectionID: conn.ID,
 	}
 	// Keep the registry password out of the rendered manifest, job logs, and
 	// anything else the redactor covers. The CA and host are fine to show.
@@ -359,6 +389,13 @@ func (s *Server) handleClustersPreview(w http.ResponseWriter, r *http.Request) {
 		"RegistryUsername": f.registry.Username, "RegistryPassword": f.registry.Password,
 		"RegistryInsecure": f.registry.Enabled() && f.registry.CACertPEM == "",
 		"VMSSHKeys":        strings.Join(f.vmSSHKeys, ", "),
+		// Threaded through as a hidden field so handleClustersApply resolves
+		// the SAME connection the manifest was actually generated against —
+		// re-deriving "the active connection" independently at apply time
+		// would be the exact class of race formConnection's doc comment
+		// warns about (a second tab switching hosts between preview and
+		// apply must not silently redirect this cluster to a different one).
+		"ConnID": conn.ID,
 	})
 }
 
@@ -368,12 +405,17 @@ func (s *Server) handleClustersApply(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad csrf", http.StatusForbidden)
 		return
 	}
-	conn, err := s.getConnection()
+	r.ParseForm()
+	// Resolve from the "ConnID" hidden field the preview screen threaded
+	// through (see handleClustersPreview) — NOT the currently-active
+	// connection, which could have changed in another tab since the
+	// manifest was generated. formConnection reads "conn", so the preview
+	// template names its hidden field "conn" too; see cluster_preview.html.
+	conn, err := s.formConnection(r)
 	if err != nil {
 		ui.RenderPartial(w, "clusters_not_connected", nil)
 		return
 	}
-	r.ParseForm()
 	name := r.FormValue("name")
 	yaml := r.FormValue("manifest_yaml")
 	templateID, _ := strconv.ParseInt(r.FormValue("template_id"), 10, 64)
@@ -425,7 +467,10 @@ func (s *Server) handleClustersApply(w http.ResponseWriter, r *http.Request) {
 		RegistryUsername: registry.Username,
 		RegistryPassword: registry.Password,
 	})
-	spec := capi.ApplySpec(name, s.dataDir, s.binDir, proxmox.NormalizeURL(conn.URL), conn.TokenID, secret, yaml, cni, addons, registry)
+	spec := capi.ApplySpec(name, s.dataDir, s.binDir, capi.ClusterConnection{
+		ID: conn.ID, URL: proxmox.NormalizeURL(conn.URL), TokenID: conn.TokenID,
+		Secret: secret, InsecureTLS: conn.InsecureTLS, IsPrimary: conn.IsPrimary,
+	}, yaml, cni, addons, registry)
 	jobID, err := s.jobs.Start(spec, `{"cluster":"`+name+`"}`)
 	if err != nil {
 		s.renderClustersPanel(w, r.Context(), session, conn, "starting job: "+err.Error())
