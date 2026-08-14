@@ -13,6 +13,17 @@ import (
 //go:embed templates/*.html templates/partials/*.html
 var templatesFS embed.FS
 
+// StaticFS holds vendored third-party JS/CSS the app depends on for basic
+// interactivity — htmx, currently. Vendored rather than loaded from a CDN
+// (unpkg.com) because a CDN being unreachable (network policy, outage, DNS)
+// otherwise takes down every hx-post button in the app with no visible
+// error beyond a browser console message; embedding it makes PVEKube's UI
+// work with zero external dependencies at request time, matching why
+// templatesFS itself is embedded instead of read from disk.
+//
+//go:embed static/*.js
+var StaticFS embed.FS
+
 // Every page template defines {{define "content"}}...{{end}} and is parsed
 // together with layout.html into its OWN template.Template instance (keyed
 // by page name below). That's deliberate: html/template resolves

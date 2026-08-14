@@ -19,7 +19,10 @@
   </script>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
-  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <!-- Vendored (internal/ui/static/htmx.min.js), not loaded from unpkg.com:
+       a CDN being unreachable used to take down every hx-post button in the
+       app with no visible error beyond the browser console. -->
+  <script src="/static/htmx.min.js"></script>
   <script>
     tailwind.config = {
       theme: {

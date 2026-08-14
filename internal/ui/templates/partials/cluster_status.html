@@ -68,6 +68,13 @@
     </div>
   </div>
 
+  {{if .ProviderIDKnownIssue}}
+  <div class="flex items-start gap-2 rounded-lg border border-amber-900 bg-amber-950/20 px-3 py-2 text-sm text-amber-200">
+    <i class="fa fa-info-circle mt-0.5"></i>
+    <span>The "spec.providerID ... to exist" conditions below and the cluster staying at phase "Provisioned" are a known, cosmetic limitation with certain OS images (e.g. Flatcar) — kubelet never resolves its provider ID without cloud-init, so Cluster API can't confirm the match and these conditions can never turn green. This does <strong>not</strong> mean the cluster is broken: check the Machines table below (nodes/pods there reflect real state) rather than these conditions for Flatcar clusters.</span>
+  </div>
+  {{end}}
+
   {{if .Status.Conditions}}
   <div>
     <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Conditions</h3>

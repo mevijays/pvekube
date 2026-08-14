@@ -360,7 +360,7 @@ func (s *Server) handleClustersPreview(w http.ResponseWriter, r *http.Request) {
 		ClusterName: f.name, KubernetesVersion: f.template.K8sVersion,
 		ControlPlaneCount: f.controlPlaneCount, WorkerCount: f.workerCount, CNI: f.cni,
 		ProxmoxURL: proxmox.NormalizeURL(conn.URL), ProxmoxTokenID: conn.TokenID, ProxmoxSecret: secret,
-		SourceNode: f.template.Node, TemplateVMID: f.template.VMID,
+		SourceNode: f.template.Node, TemplateVMID: f.template.VMID, OSFlavor: f.template.OSFlavor,
 		AllowedNodes: f.allowedNodes, VMSSHKeys: f.vmSSHKeys,
 		ControlPlaneEndpointIP: f.controlPlaneEndpoint, NodeIPRange: f.nodeIPRange,
 		Gateway: f.gateway, IPPrefix: f.ipPrefix, DNSServers: f.dnsServers, Bridge: f.bridge,

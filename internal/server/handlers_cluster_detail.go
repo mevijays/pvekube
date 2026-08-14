@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"pvekube/internal/capi"
@@ -52,7 +53,26 @@ func (s *Server) handleClusterStatus(w http.ResponseWriter, r *http.Request) {
 		"CSRF":            s.csrfFor(session),
 		"Status":          status,
 		"KubeconfigReady": kubeconfigReady,
+		// Surfaces a known, accepted limitation directly where an operator
+		// would otherwise be confused by it: certain OS images (Flatcar,
+		// via Ignition — see internal/capi/ignition.go's package doc
+		// comment) never get kubelet's --provider-id resolved, which pins
+		// these specific CAPI conditions NotReady/the Cluster phase at
+		// "Provisioned" forever even once the cluster is fully healthy.
+		// Confirmed live: patching it after the fact is impossible, not
+		// just unfixed — Kubernetes' API server rejects changing a
+		// non-empty providerID outright.
+		"ProviderIDKnownIssue": hasProviderIDCondition(status.Conditions),
 	})
+}
+
+func hasProviderIDCondition(conditions []capi.ConditionView) bool {
+	for _, c := range conditions {
+		if strings.Contains(c.Message, "spec.providerID") {
+			return true
+		}
+	}
+	return false
 }
 
 // runLifecycleJob starts a job and reloads back into the cluster status panel

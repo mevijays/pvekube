@@ -5,6 +5,7 @@ package server
 import (
 	"context"
 	"database/sql"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"pvekube/internal/jobs"
 	"pvekube/internal/prereq"
 	"pvekube/internal/secrets"
+	"pvekube/internal/ui"
 )
 
 type Server struct {
@@ -55,6 +57,15 @@ func New(d Deps) *Server {
 
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
+
+	// Vendored JS (htmx) — unauthenticated like /login and /setup, since the
+	// login page itself needs it to load. http.FileServerFS strips the
+	// "static/" prefix baked into the embed.FS's paths for us via the Sub.
+	staticFS, err := fs.Sub(ui.StaticFS, "static")
+	if err != nil {
+		panic("server: static assets not embedded correctly: " + err.Error())
+	}
+	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(staticFS)))
 
 	mux.HandleFunc("GET /setup", s.handleSetupForm)
 	mux.HandleFunc("POST /setup", s.handleSetupSubmit)

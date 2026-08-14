@@ -56,6 +56,12 @@ type GenerateInput struct {
 	AllowedNodes []string
 	VMSSHKeys    []string
 
+	// OSFlavor is the selected template's OS (templates.os_flavor, e.g.
+	// "ubuntu-2404" or "flatcar") — used only to decide whether the
+	// bootstrap payload needs Ignition instead of cloud-config. See
+	// InjectIgnitionFormat in ignition.go.
+	OSFlavor string
+
 	ControlPlaneEndpointIP string
 	NodeIPRange            string // "start-end"
 	Gateway                string
@@ -201,6 +207,14 @@ func Generate(ctx context.Context, dataDir, binDir string, in GenerateInput) (st
 	// a no-op: every cluster gets credentialsRef now, regardless of which
 	// connection it targets.
 	manifest, err = InjectCredentialsRef(manifest, in.ConnectionID)
+	if err != nil {
+		return "", err
+	}
+
+	// Flatcar images have no cloud-init — without this, control-plane and
+	// worker VMs boot, get an IP, and then never run kubeadm at all. No-op
+	// for every other flavor. See ignition.go.
+	manifest, err = InjectIgnitionFormat(manifest, in.OSFlavor)
 	if err != nil {
 		return "", err
 	}
