@@ -1,0 +1,93 @@
+{{/* Kubernetes version upgrade panel. Rendered into #cluster-upgrade-panel,
+     which lives OUTSIDE the self-polling #cluster-status div — see the
+     comment in cluster_detail.html for why that matters. */}}
+{{define "cluster_upgrade"}}
+<div class="space-y-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
+  <div class="flex items-start justify-between gap-4">
+    <div>
+      <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-400">Upgrade Kubernetes version</h2>
+      {{if .CurrentVersion}}
+      <p class="mt-1 text-sm text-slate-400">
+        <strong class="text-white">{{.ClusterName}}</strong> is running
+        <code class="rounded bg-black/40 px-1.5 py-0.5 text-slate-200">{{.CurrentVersion}}</code>
+      </p>
+      {{end}}
+    </div>
+    <button type="button" onclick="document.getElementById('cluster-upgrade-panel').innerHTML='';"
+            class="flex-none text-sm text-slate-500 hover:text-slate-300">
+      <i class="fa fa-times mr-1"></i>Close
+    </button>
+  </div>
+
+  {{if .Error}}
+  <div class="flex items-start gap-2 rounded-lg border border-red-900 bg-red-950/50 px-3 py-2 text-sm text-red-300">
+    <i class="fa fa-exclamation-circle mt-0.5"></i><span>{{.Error}}</span>
+  </div>
+  {{end}}
+
+  <div class="flex items-start gap-2 rounded-lg border border-amber-900 bg-amber-950/20 px-3 py-2 text-xs text-amber-200">
+    <i class="fa fa-exclamation-triangle mt-0.5"></i>
+    <span>
+      Nothing is upgraded in place. Cluster API replaces <em>every</em> node with a brand-new Proxmox VM cloned from the
+      template you pick — control plane first, then workers, one machine at a time. Expect several minutes per machine,
+      and make sure your workloads tolerate nodes being drained and replaced. The upgrade cannot be rolled back by
+      picking an older template afterwards: kubeadm does not support downgrades.
+    </span>
+  </div>
+
+  {{if .AnyEligible}}
+  <form hx-post="/clusters/{{.ClusterName}}/upgrade" hx-target="#cluster-upgrade-panel" hx-swap="innerHTML"
+        hx-confirm="This starts a rolling replacement of every node in &quot;{{.ClusterName}}&quot;. Existing VMs are destroyed as their replacements come up, and the upgrade cannot be reversed. Continue?"
+        class="space-y-3">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <div>
+      <label class="mb-1 block text-sm font-medium text-slate-300">Upgrade to template</label>
+      <select name="template_id"
+              class="w-full max-w-lg rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500">
+        {{range .Templates}}
+        <option value="{{.ID}}"{{if not .Eligible}} disabled{{end}}>
+          k8s {{.K8sVersion}} · {{.OSFlavor}} · VMID {{.VMID}} ({{.Node}}){{if not .Eligible}} — not a valid upgrade{{end}}
+        </option>
+        {{end}}
+      </select>
+      <p class="mt-1 text-xs text-slate-500">
+        Only templates on this cluster's own Proxmox host are listed — a machine template addresses its image by node and
+        VMID, which mean nothing on a different host.
+      </p>
+    </div>
+    <button type="submit" data-loading-text="Starting upgrade..."
+            class="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-brand-700">
+      <i class="fa fa-arrow-circle-o-up mr-1.5"></i>Start rolling upgrade
+    </button>
+  </form>
+  {{else if .Templates}}
+  <div class="rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-2 text-sm text-slate-400">
+    None of this host's templates is a valid upgrade target right now — see the reasons below. Build a template one minor
+    version ahead (for example on the Templates screen) and it will appear here.
+  </div>
+  {{else}}
+  <div class="rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-2 text-sm text-slate-400">
+    No templates are recorded for this cluster's Proxmox host yet.
+    <a href="/templates" class="underline hover:text-slate-200">Build one</a> at a newer Kubernetes version to upgrade to it.
+  </div>
+  {{end}}
+
+  {{/* Ineligible templates are listed with their reason rather than hidden:
+       an operator who expected to see a version here needs to know why it
+       isn't offered, not just find the list mysteriously short. */}}
+  {{$hasBlocked := false}}{{range .Templates}}{{if not .Eligible}}{{$hasBlocked = true}}{{end}}{{end}}
+  {{if $hasBlocked}}
+  <div>
+    <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Not available as upgrade targets</h3>
+    <div class="space-y-1.5">
+      {{range .Templates}}{{if not .Eligible}}
+      <div class="rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-2 text-xs">
+        <div class="font-medium text-slate-300">k8s {{.K8sVersion}} · {{.OSFlavor}} · VMID {{.VMID}} ({{.Node}})</div>
+        <div class="mt-0.5 text-slate-500">{{.Reason}}</div>
+      </div>
+      {{end}}{{end}}
+    </div>
+  </div>
+  {{end}}
+</div>
+{{end}}

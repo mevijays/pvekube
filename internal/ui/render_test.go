@@ -28,6 +28,18 @@ type partialCase struct {
 	mustNotContain []string
 }
 
+// upgradeTemplateStub mirrors server.upgradeTemplateView's shape. Kept local
+// so this package doesn't import server (which would be an import cycle).
+type upgradeTemplateStub struct {
+	ID         int64
+	OSFlavor   string
+	K8sVersion string
+	Node       string
+	VMID       int
+	Eligible   bool
+	Reason     string
+}
+
 func defaultsStub() any {
 	// Mirrors server.clusterDefaults' shape. Kept as an anonymous struct so
 	// this package doesn't import server (which would be a cycle).
@@ -393,6 +405,55 @@ func TestPartialsRenderWithHandlerData(t *testing.T) {
 				"CSRF":        "csrf-token-here",
 				"Status":      map[string]any{"Found": false},
 			},
+		},
+		{
+			name:    "cluster_upgrade/eligible",
+			partial: "cluster_upgrade",
+			data: map[string]any{
+				"ClusterName": "devk8s", "CSRF": "csrf-token-here",
+				"CurrentVersion": "v1.36.1", "AnyEligible": true,
+				"Templates": []upgradeTemplateStub{
+					{ID: 7, OSFlavor: "ubuntu-2604", K8sVersion: "v1.37.0", Node: "host245", VMID: 120, Eligible: true},
+				},
+			},
+			mustContain: []string{
+				"v1.36.1", "v1.37.0", "csrf-token-here",
+				`hx-post="/clusters/devk8s/upgrade"`,
+				`name="template_id"`,
+			},
+			// An eligible option must NOT be disabled, or the form renders
+			// with nothing selectable and the submit silently posts nothing.
+			mustNotContain: []string{"not a valid upgrade"},
+		},
+		{
+			name:    "cluster_upgrade/none-eligible",
+			partial: "cluster_upgrade",
+			data: map[string]any{
+				"ClusterName": "devk8s", "CSRF": "csrf-token-here",
+				"CurrentVersion": "v1.36.1", "AnyEligible": false,
+				"Templates": []upgradeTemplateStub{
+					{ID: 3, OSFlavor: "ubuntu-2604", K8sVersion: "v1.30.0", Node: "host245", VMID: 99,
+						Eligible: false, Reason: "downgrade from v1.36.1 to v1.30.0 is not supported"},
+				},
+			},
+			// The blocked template and its reason must both surface, and no
+			// submit form may render — offering a button that can only fail
+			// server-side is worse than explaining why there's nothing to do.
+			mustContain: []string{
+				"v1.30.0", "downgrade from v1.36.1 to v1.30.0 is not supported",
+				"Not available as upgrade targets",
+			},
+			mustNotContain: []string{"Start rolling upgrade"},
+		},
+		{
+			name:    "cluster_upgrade/error",
+			partial: "cluster_upgrade",
+			data: map[string]any{
+				"ClusterName": "devk8s", "CSRF": "csrf-token-here",
+				"Error": "cluster devk8s has no control plane version yet",
+			},
+			mustContain:    []string{"has no control plane version yet"},
+			mustNotContain: []string{"Start rolling upgrade"},
 		},
 	}
 

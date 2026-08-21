@@ -109,6 +109,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /clusters/{name}/kubeconfig", s.requireAuth(s.handleClusterKubeconfig))
 	mux.HandleFunc("POST /clusters/{name}/scale-workers", s.requireAuth(s.handleClusterScaleWorkers))
 	mux.HandleFunc("POST /clusters/{name}/scale-controlplane", s.requireAuth(s.handleClusterScaleControlPlane))
+	mux.HandleFunc("GET /clusters/{name}/upgrade", s.requireAuth(s.handleClusterUpgradeForm))
+	mux.HandleFunc("POST /clusters/{name}/upgrade", s.requireAuth(s.handleClusterUpgrade))
 	mux.HandleFunc("POST /clusters/{name}/delete", s.requireAuth(s.handleClusterDelete))
 
 	return withLogging(mux)

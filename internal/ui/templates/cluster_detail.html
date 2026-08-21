@@ -9,6 +9,13 @@
     </div>
   </div>
 
+  <!--
+    The upgrade panel deliberately lives OUTSIDE #cluster-status: that div
+    reloads itself every 5s, so anything rendered inside it (a half-filled
+    upgrade form, a running job's log) would be wiped mid-interaction.
+  -->
+  <div id="cluster-upgrade-panel" class="mt-6"></div>
+
   <div id="cluster-status" class="mt-6" hx-get="/clusters/{{.ClusterName}}/status" hx-trigger="load, every 5s" hx-swap="innerHTML">
     <div class="flex items-center gap-2 text-sm text-slate-500"><i class="fa fa-spinner fa-spin"></i> Loading…</div>
   </div>
