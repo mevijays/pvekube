@@ -202,6 +202,7 @@ type clusterForm struct {
 	allowedNodes         []string
 	addons               capi.AddonSelection
 	registry             capi.RegistryConfig
+	oidc                 capi.OIDCConfig
 }
 
 func (s *Server) parseClusterForm(r *http.Request, connID int64) (clusterForm, error) {
@@ -237,6 +238,15 @@ func (s *Server) parseClusterForm(r *http.Request, connID int64) (clusterForm, e
 			// authentication header built from this value later.
 			Password: strings.TrimSpace(r.FormValue("registry_password")),
 		},
+		oidc: capi.OIDCConfig{
+			Provider:          r.FormValue("oidc_provider"),
+			IssuerURL:         strings.TrimSpace(r.FormValue("oidc_issuer_url")),
+			ClientID:          strings.TrimSpace(r.FormValue("oidc_client_id")),
+			UsernameClaim:     strings.TrimSpace(r.FormValue("oidc_username_claim")),
+			GroupsClaim:       strings.TrimSpace(r.FormValue("oidc_groups_claim")),
+			CACertPEM:         strings.TrimSpace(r.FormValue("oidc_ca_cert")),
+			DefaultUsersGroup: strings.TrimSpace(r.FormValue("oidc_default_users_group")),
+		},
 	}
 	if f.name == "" {
 		return f, errBadInput("cluster name is required")
@@ -245,6 +255,9 @@ func (s *Server) parseClusterForm(r *http.Request, connID int64) (clusterForm, e
 		return f, errBadInput("MetalLB is checked but no IP pool was given")
 	}
 	if err := validateRegistryForm(f.registry); err != nil {
+		return f, err
+	}
+	if err := validateOIDCForm(f.oidc); err != nil {
 		return f, err
 	}
 	for _, s := range strings.Split(r.FormValue("dns_servers"), ",") {
@@ -299,6 +312,36 @@ func validateRegistryForm(reg capi.RegistryConfig) error {
 	}
 	if (reg.Username == "") != (reg.Password == "") {
 		return errBadInput("registry username and password must be given together")
+	}
+	return nil
+}
+
+// validateOIDCForm mirrors validateRegistryForm's shape: same "either fully
+// configured or fully empty" contract, same CA-is-actually-PEM check.
+func validateOIDCForm(oidc capi.OIDCConfig) error {
+	if !oidc.Enabled() {
+		if oidc.IssuerURL != "" || oidc.ClientID != "" || oidc.CACertPEM != "" {
+			return errBadInput("OIDC issuer URL and client ID must be given together")
+		}
+		if oidc.DefaultUsersGroup != "" {
+			return errBadInput("a default users group was given but OIDC issuer URL/client ID are empty — it would grant access to a group that can never authenticate")
+		}
+		return nil
+	}
+	if !strings.HasPrefix(oidc.IssuerURL, "https://") {
+		return errBadInput("OIDC issuer URL must start with https:// — kube-apiserver's OIDC plugin requires it")
+	}
+	if ca := oidc.CACertPEM; ca != "" {
+		block, _ := pem.Decode([]byte(ca))
+		if block == nil {
+			return errBadInput("OIDC CA certificate is not valid PEM — it should start with -----BEGIN CERTIFICATE-----")
+		}
+		if block.Type != "CERTIFICATE" {
+			return errBadInput("OIDC CA must be a CERTIFICATE PEM block, got " + block.Type)
+		}
+		if _, err := x509.ParseCertificate(block.Bytes); err != nil {
+			return errBadInput("OIDC CA certificate could not be parsed: " + err.Error())
+		}
 	}
 	return nil
 }
@@ -365,7 +408,7 @@ func (s *Server) handleClustersPreview(w http.ResponseWriter, r *http.Request) {
 		ControlPlaneEndpointIP: f.controlPlaneEndpoint, NodeIPRange: f.nodeIPRange,
 		Gateway: f.gateway, IPPrefix: f.ipPrefix, DNSServers: f.dnsServers, Bridge: f.bridge,
 		BootVolumeSizeGB: f.bootVolumeSize, NumSockets: f.numSockets, NumCores: f.numCores, MemoryMiB: f.memoryMiB,
-		Registry: f.registry, ConnectionID: conn.ID,
+		Registry: f.registry, OIDC: f.oidc, ConnectionID: conn.ID,
 	}
 	// Keep the registry password out of the rendered manifest, job logs, and
 	// anything else the redactor covers. The CA and host are fine to show.
@@ -389,6 +432,10 @@ func (s *Server) handleClustersPreview(w http.ResponseWriter, r *http.Request) {
 		"RegistryUsername": f.registry.Username, "RegistryPassword": f.registry.Password,
 		"RegistryInsecure": f.registry.Enabled() && f.registry.CACertPEM == "",
 		"VMSSHKeys":        strings.Join(f.vmSSHKeys, ", "),
+		"OIDCEnabled":      f.oidc.Enabled(),
+		"OIDCProvider":     f.oidc.Provider, "OIDCIssuerURL": f.oidc.IssuerURL, "OIDCClientID": f.oidc.ClientID,
+		"OIDCUsernameClaim": f.oidc.UsernameClaim, "OIDCGroupsClaim": f.oidc.GroupsClaim, "OIDCCACert": f.oidc.CACertPEM,
+		"OIDCDefaultUsersGroup": f.oidc.DefaultUsersGroup,
 		// Threaded through as a hidden field so handleClustersApply resolves
 		// the SAME connection the manifest was actually generated against —
 		// re-deriving "the active connection" independently at apply time
@@ -457,20 +504,42 @@ func (s *Server) handleClustersApply(w http.ResponseWriter, r *http.Request) {
 		s.redactor.Track(registry.Password)
 	}
 
+	// The manifest already carries the OIDC auth flags baked in from preview
+	// time (see InjectOIDCAuth) — only DefaultUsersGroup still needs to be
+	// acted on here, since RBAC isn't part of the manifest at all (it's a
+	// post-provision step, needs a reachable API server — see
+	// InstallOIDCDefaultGroupRBACStep).
+	oidcDefaults := capi.OIDCConfig{
+		Provider:          r.FormValue("oidc_provider"),
+		IssuerURL:         strings.TrimSpace(r.FormValue("oidc_issuer_url")),
+		ClientID:          strings.TrimSpace(r.FormValue("oidc_client_id")),
+		UsernameClaim:     strings.TrimSpace(r.FormValue("oidc_username_claim")),
+		GroupsClaim:       strings.TrimSpace(r.FormValue("oidc_groups_claim")),
+		CACertPEM:         strings.TrimSpace(r.FormValue("oidc_ca_cert")),
+		DefaultUsersGroup: strings.TrimSpace(r.FormValue("oidc_default_users_group")),
+	}
+
 	// Remember the environment-wide inputs so the next cluster's form comes
 	// up pre-filled. Done here rather than at preview so that abandoning a
 	// half-filled form never changes the seed for the next one.
 	s.saveClusterDefaults(clusterDefaults{
-		VMSSHKeys:        strings.TrimSpace(r.FormValue("vm_ssh_keys")),
-		RegistryHost:     registry.Host,
-		RegistryCACert:   registry.CACertPEM,
-		RegistryUsername: registry.Username,
-		RegistryPassword: registry.Password,
+		VMSSHKeys:             strings.TrimSpace(r.FormValue("vm_ssh_keys")),
+		RegistryHost:          registry.Host,
+		RegistryCACert:        registry.CACertPEM,
+		RegistryUsername:      registry.Username,
+		RegistryPassword:      registry.Password,
+		OIDCProvider:          oidcDefaults.Provider,
+		OIDCIssuerURL:         oidcDefaults.IssuerURL,
+		OIDCClientID:          oidcDefaults.ClientID,
+		OIDCUsernameClaim:     oidcDefaults.UsernameClaim,
+		OIDCGroupsClaim:       oidcDefaults.GroupsClaim,
+		OIDCCACert:            oidcDefaults.CACertPEM,
+		OIDCDefaultUsersGroup: oidcDefaults.DefaultUsersGroup,
 	})
 	spec := capi.ApplySpec(name, s.dataDir, s.binDir, capi.ClusterConnection{
 		ID: conn.ID, URL: proxmox.NormalizeURL(conn.URL), TokenID: conn.TokenID,
 		Secret: secret, InsecureTLS: conn.InsecureTLS, IsPrimary: conn.IsPrimary,
-	}, yaml, cni, addons, registry)
+	}, yaml, cni, addons, registry, oidcDefaults)
 	jobID, err := s.jobs.Start(spec, `{"cluster":"`+name+`"}`)
 	if err != nil {
 		s.renderClustersPanel(w, r.Context(), session, conn, "starting job: "+err.Error())

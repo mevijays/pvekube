@@ -80,6 +80,12 @@ type GenerateInput struct {
 	// registry and leaves the manifest untouched.
 	Registry RegistryConfig
 
+	// OIDC, when set, wires the workload cluster's API server to
+	// authenticate against Dex/GitHub/Azure Entra ID/any OIDC provider —
+	// see InjectOIDCAuth. Zero value means no OIDC and leaves the manifest
+	// untouched.
+	OIDC OIDCConfig
+
 	// ConnectionID identifies which Proxmox connection this cluster targets
 	// — used to inject spec.credentialsRef into the generated ProxmoxCluster
 	// document (see InjectCredentialsRef in credentials.go) so the cluster
@@ -196,6 +202,14 @@ func Generate(ctx context.Context, dataDir, binDir string, in GenerateInput) (st
 	// not applied afterwards — containerd needs the CA before kubeadm pulls
 	// its first image. No-op (and byte-identical output) when unset.
 	manifest, err := InjectRegistryTrust(manifest, in.Registry)
+	if err != nil {
+		return "", err
+	}
+
+	// OIDC auth needs to be live before the API server ever starts —
+	// there's no window where a kubectl patch afterward would actually
+	// take effect on the already-running process. No-op when unset.
+	manifest, err = InjectOIDCAuth(manifest, in.OIDC)
 	if err != nil {
 		return "", err
 	}
@@ -454,7 +468,7 @@ type ClusterConnection struct {
 // yet. Any selected post-provision addons (metrics-server, Istio, MetalLB)
 // are installed last, after CNI, so they land on a cluster that already has
 // pod networking.
-func ApplySpec(clusterName, dataDir, binDir string, conn ClusterConnection, manifestYAML string, cni CNIFlavor, addons AddonSelection, registry RegistryConfig) *jobs.Spec {
+func ApplySpec(clusterName, dataDir, binDir string, conn ClusterConnection, manifestYAML string, cni CNIFlavor, addons AddonSelection, registry RegistryConfig, oidc OIDCConfig) *jobs.Spec {
 	spec := jobs.NewSpec("cluster.apply", "Apply cluster "+clusterName).
 		Step("Sync connection credentials", EnsureConnectionCredentialsSecret(dataDir, binDir, conn.ID, conn.URL, conn.TokenID, conn.Secret, conn.InsecureTLS)).
 		Step("kubectl apply", ApplyStep(dataDir, binDir, manifestYAML)).
@@ -464,6 +478,11 @@ func ApplySpec(clusterName, dataDir, binDir string, conn ClusterConnection, mani
 	// only adds the pull credentials, which need a reachable API server.
 	if registry.HasAuth() {
 		spec.Step("Configure registry credentials", InstallRegistryCredentialsStep(dataDir, binDir, clusterName, registry))
+	}
+	// OIDC auth itself is already live via the manifest; this only grants
+	// the default group's RBAC, which needs a reachable API server.
+	if group := strings.TrimSpace(oidc.DefaultUsersGroup); group != "" {
+		spec.Step("Grant default OIDC group access", InstallOIDCDefaultGroupRBACStep(dataDir, binDir, clusterName, group))
 	}
 	return AddonSteps(spec, dataDir, binDir, clusterName, addons)
 }

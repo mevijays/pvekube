@@ -18,6 +18,19 @@ type clusterDefaults struct {
 	RegistryCACert   string
 	RegistryUsername string
 	RegistryPassword string
+
+	// OIDC auth settings — no secret among these (see 0004_oidc_defaults.sql's
+	// comment for why), so they need none of the sealing RegistryPassword does.
+	OIDCProvider      string
+	OIDCIssuerURL     string
+	OIDCClientID      string
+	OIDCUsernameClaim string
+	OIDCGroupsClaim   string
+	OIDCCACert        string
+	// OIDCDefaultUsersGroup is the group InstallOIDCDefaultGroupRBACStep
+	// grants the built-in "view" ClusterRole to automatically — see its doc
+	// comment (internal/capi/oidc.go) for why this exists.
+	OIDCDefaultUsersGroup string
 }
 
 // loadClusterDefaults reads the remembered inputs. A missing row (nothing
@@ -26,9 +39,11 @@ type clusterDefaults struct {
 func (s *Server) loadClusterDefaults() clusterDefaults {
 	var d clusterDefaults
 	var sealed []byte
-	row := s.db.QueryRow(`SELECT vm_ssh_keys, registry_host, registry_ca_cert, registry_username, registry_password_sealed
+	row := s.db.QueryRow(`SELECT vm_ssh_keys, registry_host, registry_ca_cert, registry_username, registry_password_sealed,
+	                              oidc_provider, oidc_issuer_url, oidc_client_id, oidc_username_claim, oidc_groups_claim, oidc_ca_cert, oidc_default_users_group
 	                        FROM cluster_defaults WHERE id = 1`)
-	if err := row.Scan(&d.VMSSHKeys, &d.RegistryHost, &d.RegistryCACert, &d.RegistryUsername, &sealed); err != nil {
+	if err := row.Scan(&d.VMSSHKeys, &d.RegistryHost, &d.RegistryCACert, &d.RegistryUsername, &sealed,
+		&d.OIDCProvider, &d.OIDCIssuerURL, &d.OIDCClientID, &d.OIDCUsernameClaim, &d.OIDCGroupsClaim, &d.OIDCCACert, &d.OIDCDefaultUsersGroup); err != nil {
 		if err != sql.ErrNoRows {
 			slog.Warn("loading cluster defaults", "err", err)
 		}
@@ -64,6 +79,14 @@ func (s *Server) saveClusterDefaults(d clusterDefaults) {
 		RegistryCACert:   firstNonEmpty(d.RegistryCACert, cur.RegistryCACert),
 		RegistryUsername: firstNonEmpty(d.RegistryUsername, cur.RegistryUsername),
 		RegistryPassword: firstNonEmpty(d.RegistryPassword, cur.RegistryPassword),
+
+		OIDCProvider:          firstNonEmpty(d.OIDCProvider, cur.OIDCProvider),
+		OIDCIssuerURL:         firstNonEmpty(d.OIDCIssuerURL, cur.OIDCIssuerURL),
+		OIDCClientID:          firstNonEmpty(d.OIDCClientID, cur.OIDCClientID),
+		OIDCUsernameClaim:     firstNonEmpty(d.OIDCUsernameClaim, cur.OIDCUsernameClaim),
+		OIDCGroupsClaim:       firstNonEmpty(d.OIDCGroupsClaim, cur.OIDCGroupsClaim),
+		OIDCCACert:            firstNonEmpty(d.OIDCCACert, cur.OIDCCACert),
+		OIDCDefaultUsersGroup: firstNonEmpty(d.OIDCDefaultUsersGroup, cur.OIDCDefaultUsersGroup),
 	}
 
 	var sealed []byte
@@ -77,16 +100,25 @@ func (s *Server) saveClusterDefaults(d clusterDefaults) {
 	}
 
 	if _, err := s.db.Exec(`
-		INSERT INTO cluster_defaults (id, vm_ssh_keys, registry_host, registry_ca_cert, registry_username, registry_password_sealed, updated_at)
-		VALUES (1, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		INSERT INTO cluster_defaults (id, vm_ssh_keys, registry_host, registry_ca_cert, registry_username, registry_password_sealed,
+		                              oidc_provider, oidc_issuer_url, oidc_client_id, oidc_username_claim, oidc_groups_claim, oidc_ca_cert, oidc_default_users_group, updated_at)
+		VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(id) DO UPDATE SET
 			vm_ssh_keys = excluded.vm_ssh_keys,
 			registry_host = excluded.registry_host,
 			registry_ca_cert = excluded.registry_ca_cert,
 			registry_username = excluded.registry_username,
 			registry_password_sealed = excluded.registry_password_sealed,
+			oidc_provider = excluded.oidc_provider,
+			oidc_issuer_url = excluded.oidc_issuer_url,
+			oidc_client_id = excluded.oidc_client_id,
+			oidc_username_claim = excluded.oidc_username_claim,
+			oidc_groups_claim = excluded.oidc_groups_claim,
+			oidc_ca_cert = excluded.oidc_ca_cert,
+			oidc_default_users_group = excluded.oidc_default_users_group,
 			updated_at = CURRENT_TIMESTAMP`,
-		merged.VMSSHKeys, merged.RegistryHost, merged.RegistryCACert, merged.RegistryUsername, sealed); err != nil {
+		merged.VMSSHKeys, merged.RegistryHost, merged.RegistryCACert, merged.RegistryUsername, sealed,
+		merged.OIDCProvider, merged.OIDCIssuerURL, merged.OIDCClientID, merged.OIDCUsernameClaim, merged.OIDCGroupsClaim, merged.OIDCCACert, merged.OIDCDefaultUsersGroup); err != nil {
 		// Never fail the cluster launch over a convenience feature.
 		slog.Warn("saving cluster defaults", "err", err)
 	}

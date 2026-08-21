@@ -37,10 +37,23 @@ func defaultsStub() any {
 		RegistryCACert   string
 		RegistryUsername string
 		RegistryPassword string
+
+		OIDCProvider          string
+		OIDCIssuerURL         string
+		OIDCClientID          string
+		OIDCUsernameClaim     string
+		OIDCGroupsClaim       string
+		OIDCCACert            string
+		OIDCDefaultUsersGroup string
 	}{
 		VMSSHKeys:      "ssh-ed25519 AAAAC3Nz",
 		RegistryHost:   "registry.internal.lan:5000",
 		RegistryCACert: "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----",
+
+		OIDCProvider:          "dex",
+		OIDCIssuerURL:         "https://dex.internal.lan",
+		OIDCClientID:          "kubernetes",
+		OIDCDefaultUsersGroup: "k8susers",
 	}
 }
 
@@ -303,6 +316,44 @@ func TestPartialsRenderWithHandlerData(t *testing.T) {
 			partial:     "cluster_preview",
 			data:        map[string]any{"Error": "generate failed"},
 			mustContain: []string{"generate failed"},
+		},
+		{
+			name:    "cluster_preview/oidc",
+			partial: "cluster_preview",
+			data: map[string]any{
+				"ClusterName": "demo", "TemplateID": int64(1), "YAML": "apiVersion: v1",
+				"CSRF": "csrf-token-here", "CNI": "calico", "ConnID": int64(5),
+				"OIDCEnabled": true, "OIDCProvider": "dex",
+				"OIDCIssuerURL": "https://dex.internal.lan", "OIDCClientID": "kubernetes",
+				"OIDCUsernameClaim": "email", "OIDCGroupsClaim": "groups", "OIDCCACert": "PEM",
+			},
+			// Both the summary note AND the hidden fields the apply form
+			// needs to carry OIDC forward (see cluster_preview.html) must
+			// actually render, not just the note.
+			mustContain: []string{
+				"dex.internal.lan", "OIDC alone grants no permissions",
+				`name="oidc_issuer_url" value="https://dex.internal.lan"`,
+				`name="oidc_client_id" value="kubernetes"`,
+			},
+		},
+		{
+			name:    "cluster_preview/oidc-default-users-group",
+			partial: "cluster_preview",
+			data: map[string]any{
+				"ClusterName": "demo", "TemplateID": int64(1), "YAML": "apiVersion: v1",
+				"CSRF": "csrf-token-here", "CNI": "calico", "ConnID": int64(5),
+				"OIDCEnabled": true, "OIDCProvider": "dex",
+				"OIDCIssuerURL": "https://dex.internal.lan", "OIDCClientID": "kubernetes",
+				"OIDCDefaultUsersGroup": "k8susers",
+			},
+			// Setting a default group swaps the "remember to grant RBAC
+			// yourself" note for one naming the group and role, and must
+			// carry the group forward as a hidden field to the apply form.
+			mustContain: []string{
+				"k8susers", "will be granted the built-in",
+				`name="oidc_default_users_group" value="k8susers"`,
+			},
+			mustNotContain: []string{"OIDC alone grants no permissions"},
 		},
 		{
 			name:    "cluster_status/found",

@@ -240,7 +240,7 @@
           </p>
           <button type="button" hx-post="/clusters/defaults/clear" hx-target="#clusters-panel" hx-swap="outerHTML"
                   hx-vals='{"csrf": "{{$.CSRF}}", "conn": "{{$.SelectedConn.ID}}"}'
-                  hx-confirm="Forget the saved SSH keys and registry settings? The next cluster form will come up blank."
+                  hx-confirm="Forget the saved SSH keys, registry, and OIDC settings? The next cluster form will come up blank."
                   class="flex-none rounded-lg border border-slate-700 px-2.5 py-1 text-xs text-slate-300 hover:bg-slate-800">
             <i class="fa fa-eraser mr-1"></i>Forget
           </button>
@@ -282,6 +282,147 @@
             <span class="text-slate-400">TLS trust, above, applies to every pull on every node regardless.</span>
           </p>
         </div>
+      </div>
+
+      <div>
+        <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">API server authentication (OIDC)</h3>
+        <p class="mb-2 text-xs text-slate-500">
+          Optional. Lets people sign in to <code>kubectl</code>/the API server with an identity provider instead of
+          client certificates. This only wires up <em>authentication</em> — you still need RBAC
+          (<code>Role</code>/<code>ClusterRoleBinding</code>) to grant whoever signs in any actual permissions;
+          without it every OIDC user gets a valid identity and zero access.
+        </p>
+        {{if .Defaults.OIDCIssuerURL}}
+        <div class="mb-2 flex items-start gap-2 rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-2 text-xs text-slate-400">
+          <i class="fa fa-history mt-0.5"></i>
+          <span>Pre-filled from your last cluster — edit to override, or clear the issuer URL to build this one without OIDC. Use "Forget" above to clear everything including this.</span>
+        </div>
+        {{end}}
+
+        <div class="mb-3">
+          <label class="mb-1 block text-sm font-medium text-slate-300">Identity provider</label>
+          <select name="oidc_provider" onchange="pvekubeShowOIDCHint(this.value)"
+                  class="w-full max-w-sm rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500">
+            <option value="">Select for setup guidance (optional)</option>
+            <option value="dex" {{if eq .Defaults.OIDCProvider "dex"}}selected{{end}}>Dex (self-hosted broker)</option>
+            <option value="github" {{if eq .Defaults.OIDCProvider "github"}}selected{{end}}>GitHub (via Dex)</option>
+            <option value="azuread" {{if eq .Defaults.OIDCProvider "azuread"}}selected{{end}}>Azure Entra ID (Azure AD)</option>
+            <option value="generic" {{if eq .Defaults.OIDCProvider "generic"}}selected{{end}}>Other / generic OIDC (Okta, Keycloak, Google, ...)</option>
+          </select>
+        </div>
+
+        <div id="oidc-hint-dex" class="oidc-hint mb-3 hidden rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-2 text-xs text-slate-400">
+          <p class="mb-1 font-medium text-slate-300">Dex setup</p>
+          <ol class="list-decimal space-y-1 pl-4">
+            <li>Run Dex somewhere reachable from wherever <code>kubectl</code> runs (it does NOT need to be reachable from the cluster nodes themselves — only token verification happens there, via HTTPS, at API server startup and per-request).</li>
+            <li>In Dex's <code>config.yaml</code>, add a static client:
+              <pre class="mt-1 overflow-x-auto rounded bg-black/40 p-2">staticClients:
+- id: kubernetes
+  name: Kubernetes
+  secret: &lt;a-random-secret&gt;   # used by kubectl/oidc-login, never by the API server
+  redirectURIs:
+  - http://localhost:8000</pre>
+            </li>
+            <li>Configure a <code>connectors:</code> entry for your real identity source (LDAP, SAML, GitHub, Google, etc.) — Dex brokers to it, kube-apiserver only ever talks to Dex.</li>
+            <li>Below: <strong>Issuer URL</strong> = Dex's own <code>issuer:</code> value exactly (scheme + trailing slash must match). <strong>Client ID</strong> = <code>kubernetes</code> (the static client id above).</li>
+            <li><strong>CA certificate</strong>: only needed if Dex's TLS cert isn't from a publicly-trusted CA.</li>
+          </ol>
+        </div>
+
+        <div id="oidc-hint-github" class="oidc-hint mb-3 hidden rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-2 text-xs text-slate-400">
+          <p class="mb-1 font-medium text-slate-300">GitHub setup</p>
+          <p class="mb-1">GitHub doesn't speak OIDC in a way kube-apiserver's OIDC plugin can consume directly — the standard pattern is running Dex as a broker with GitHub as its connector.</p>
+          <ol class="list-decimal space-y-1 pl-4">
+            <li>GitHub → Settings → Developer settings → OAuth Apps → New OAuth App. Note the Client ID and generate a Client Secret.</li>
+            <li>In Dex's <code>config.yaml</code>:
+              <pre class="mt-1 overflow-x-auto rounded bg-black/40 p-2">connectors:
+- type: github
+  id: github
+  config:
+    clientID: &lt;from GitHub&gt;
+    clientSecret: &lt;from GitHub&gt;
+    redirectURI: https://dex.yourdomain.com/callback
+    orgs:
+    - name: your-github-org</pre>
+              The <code>orgs:</code>/team mapping is what populates the <code>groups</code> claim.
+            </li>
+            <li>Add the same <code>staticClients</code> block shown under Dex above.</li>
+            <li>Below: point <strong>Issuer URL</strong>/<strong>Client ID</strong> at Dex, not at GitHub directly.</li>
+          </ol>
+        </div>
+
+        <div id="oidc-hint-azuread" class="oidc-hint mb-3 hidden rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-2 text-xs text-slate-400">
+          <p class="mb-1 font-medium text-slate-300">Azure Entra ID (Azure AD) setup</p>
+          <p class="mb-1">Entra ID is a real OIDC issuer — no broker needed.</p>
+          <ol class="list-decimal space-y-1 pl-4">
+            <li>Azure Portal → Entra ID → App registrations → New registration. Note the <strong>Application (client) ID</strong> and <strong>Directory (tenant) ID</strong>.</li>
+            <li>Below: <strong>Issuer URL</strong> = <code>https://login.microsoftonline.com/&lt;tenant-id&gt;/v2.0</code>. <strong>Client ID</strong> = the Application (client) ID.</li>
+            <li>App registration → Token configuration → Add groups claim, or the ID token won't carry one at all.
+              <span class="text-amber-400">Caveat: Azure AD only inlines up to 200 groups in the token by default (an "overage" claim appears past that) — fine for most homelabs, worth knowing if group counts grow.</span>
+            </li>
+            <li>Username claim: <code>upn</code> is usually present without extra config; <code>email</code> needs an optional claim added under Token configuration first. Set whichever you actually configured below.</li>
+            <li>CA certificate: leave blank — Microsoft's cert chains to a public CA.</li>
+          </ol>
+        </div>
+
+        <div id="oidc-hint-generic" class="oidc-hint mb-3 hidden rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-2 text-xs text-slate-400">
+          <p class="mb-1 font-medium text-slate-300">Generic OIDC setup</p>
+          <p>Any provider that serves standard OIDC discovery works (Okta, Keycloak, Google, ...): register an application/client with your provider, then below use the issuer URL it gives you (must serve <code>&lt;issuer&gt;/.well-known/openid-configuration</code>) and that client's ID. Ask your provider's admin console what claim it uses for username/groups — defaults here are <code>email</code>/<code>groups</code>, which many but not all providers use.</p>
+        </div>
+
+        <div class="grid gap-3 sm:grid-cols-2">
+          <div class="sm:col-span-2">
+            <label class="mb-1 block text-sm font-medium text-slate-300">Issuer URL</label>
+            <input type="text" name="oidc_issuer_url" value="{{.Defaults.OIDCIssuerURL}}" placeholder="https://dex.yourdomain.com"
+                   class="w-full max-w-lg rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+          </div>
+          <div>
+            <label class="mb-1 block text-sm font-medium text-slate-300">Client ID</label>
+            <input type="text" name="oidc_client_id" value="{{.Defaults.OIDCClientID}}" placeholder="kubernetes"
+                   class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+          </div>
+          <div></div>
+          <div>
+            <label class="mb-1 block text-sm font-medium text-slate-300">Username claim <span class="text-slate-500">(default: email)</span></label>
+            <input type="text" name="oidc_username_claim" value="{{.Defaults.OIDCUsernameClaim}}" placeholder="email"
+                   class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+          </div>
+          <div>
+            <label class="mb-1 block text-sm font-medium text-slate-300">Groups claim <span class="text-slate-500">(default: groups)</span></label>
+            <input type="text" name="oidc_groups_claim" value="{{.Defaults.OIDCGroupsClaim}}" placeholder="groups"
+                   class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+          </div>
+          <div class="sm:col-span-2">
+            <label class="mb-1 block text-sm font-medium text-slate-300">CA certificate <span class="text-slate-500">(PEM, optional — self-signed issuers only)</span></label>
+            <textarea name="oidc_ca_cert" rows="4" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+                      class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-white">{{.Defaults.OIDCCACert}}</textarea>
+          </div>
+          <div class="sm:col-span-2">
+            <label class="mb-1 block text-sm font-medium text-slate-300">Default users group <span class="text-slate-500">(optional)</span></label>
+            <input type="text" name="oidc_default_users_group" value="{{.Defaults.OIDCDefaultUsersGroup}}" placeholder="k8susers"
+                   class="w-full max-w-sm rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+            <p class="mt-1 text-xs text-slate-500">
+              The exact value your IdP's <code>groups</code> claim returns for this group (no prefix — this app doesn't set
+              <code>oidc-groups-prefix</code>). If set, this group is automatically granted the built-in <code>view</code>
+              ClusterRole cluster-wide (read-only, excludes Secrets) once the cluster comes up — a reasonable default so
+              nobody authenticates successfully and then hits <code>Forbidden</code> on everything. Anything more
+              (e.g. <code>cluster-admin</code> for an ops group) still needs its own <code>ClusterRoleBinding</code>
+              applied by hand after the cluster is up.
+            </p>
+          </div>
+        </div>
+        <script>
+          function pvekubeShowOIDCHint(provider) {
+            document.querySelectorAll('.oidc-hint').forEach(function(el) { el.classList.add('hidden'); });
+            var el = document.getElementById('oidc-hint-' + provider);
+            if (el) el.classList.remove('hidden');
+          }
+          // Show the hint for whatever's pre-selected (remembered from last time) on load.
+          (function() {
+            var sel = document.querySelector('select[name="oidc_provider"]');
+            if (sel && sel.value) pvekubeShowOIDCHint(sel.value);
+          })();
+        </script>
       </div>
 
       <div id="ip-plan-issues"></div>

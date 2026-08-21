@@ -21,6 +21,12 @@
     {{if .RegistryInsecure}}<span class="text-amber-400">(TLS verification skipped — no CA given)</span>{{else}}(via the CA in the manifest above){{end}}{{if .RegistryUsername}}, with pull credentials applied separately as a Secret{{end}}.
   </p>
   {{end}}
+  {{if .OIDCEnabled}}
+  <p class="text-xs text-slate-500">
+    <i class="fa fa-key mr-1"></i>API server will authenticate via OIDC — issuer <code class="text-slate-300">{{.OIDCIssuerURL}}</code>, client ID <code class="text-slate-300">{{.OIDCClientID}}</code>.
+    {{if .OIDCDefaultUsersGroup}}Group <code class="text-slate-300">{{.OIDCDefaultUsersGroup}}</code> will be granted the built-in <code class="text-slate-300">view</code> ClusterRole (read-only) automatically after apply.{{else}}Remember to grant RBAC to whichever users/groups sign in — OIDC alone grants no permissions.{{end}}
+  </p>
+  {{end}}
   <form hx-post="/clusters/apply" hx-target="#clusters-panel" hx-swap="outerHTML"
         hx-confirm="Apply this manifest and start launching real VMs on Proxmox?">
     <input type="hidden" name="csrf" value="{{.CSRF}}">
@@ -43,6 +49,14 @@
     {{if .RegistryUsername}}<input type="hidden" name="registry_username" value="{{.RegistryUsername}}">
     <input type="hidden" name="registry_password" value="{{.RegistryPassword}}">{{end}}{{end}}
     {{if .VMSSHKeys}}<input type="hidden" name="vm_ssh_keys" value="{{.VMSSHKeys}}">{{end}}
+    {{if .OIDCEnabled}}<input type="hidden" name="oidc_provider" value="{{.OIDCProvider}}">
+    <input type="hidden" name="oidc_issuer_url" value="{{.OIDCIssuerURL}}">
+    <input type="hidden" name="oidc_client_id" value="{{.OIDCClientID}}">
+    <input type="hidden" name="oidc_username_claim" value="{{.OIDCUsernameClaim}}">
+    <input type="hidden" name="oidc_groups_claim" value="{{.OIDCGroupsClaim}}">
+    <textarea name="oidc_ca_cert" class="hidden">{{.OIDCCACert}}</textarea>
+    {{if .OIDCDefaultUsersGroup}}<input type="hidden" name="oidc_default_users_group" value="{{.OIDCDefaultUsersGroup}}">{{end}}
+    {{end}}
     <textarea name="manifest_yaml" class="hidden">{{.YAML}}</textarea>
     <button type="submit" data-loading-text="Launching cluster..." class="rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700">
       <i class="fa fa-rocket mr-1.5"></i>Apply — launch this cluster

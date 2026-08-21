@@ -109,6 +109,7 @@ All orchestration happens declaratively through Kubernetes resources — PVEKube
 - **[Features]({{ '/features/' | relative_url }})** — Detailed capability breakdown
 - **[API Reference]({{ '/api-reference/' | relative_url }})** — HTTP endpoints and database schema
 - **[Troubleshooting]({{ '/troubleshooting/' | relative_url }})** — Common issues and solutions
+- **[OIDC Authentication with Dex]({{ '/oidc-dex/' | relative_url }})** — Full Dex + LDAP OIDC setup runbook, including RBAC
 - **[Contributing]({{ '/contributing/' | relative_url }})** — Development setup and contribution guidelines
 
 ## Known Limitations
