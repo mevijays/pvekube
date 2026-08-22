@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"pvekube/internal/imagebuilder"
@@ -217,7 +218,13 @@ func (s *Server) handleTemplatesValidate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	spec := imagebuilder.ValidateSpec(s.dataDir, input.flavor, input.env)
+	kv, err := s.resolveK8sVersion(r, input.k8sVersion)
+	if err != nil {
+		s.renderTemplatesPanel(w, r.Context(), session, conn, err.Error())
+		return
+	}
+
+	spec := imagebuilder.ValidateSpec(s.dataDir, input.flavor, input.env, kv)
 	jobID, err := s.jobs.Start(spec, `{"kind":"validate"}`)
 	if err != nil {
 		s.renderTemplatesPanel(w, r.Context(), session, conn, "starting job: "+err.Error())
@@ -227,6 +234,21 @@ func (s *Server) handleTemplatesValidate(w http.ResponseWriter, r *http.Request)
 		"JobID": jobID, "Title": spec.Title,
 		"WrapperID": "templates-panel", "ReloadURL": "/templates/panel", "ReloadTarget": "#templates-panel",
 	})
+}
+
+// resolveK8sVersion turns the optional "Kubernetes version" form field into
+// the full set of image-builder variables, checking against upstream that
+// the version is actually published as a package.
+//
+// Blank stays blank — that path keeps using image-builder's own pinned
+// default, which is the behaviour every template built so far relied on.
+func (s *Server) resolveK8sVersion(r *http.Request, requested string) (imagebuilder.KubernetesVersion, error) {
+	if strings.TrimSpace(requested) == "" {
+		return imagebuilder.KubernetesVersion{}, nil
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	return imagebuilder.ResolveKubernetesVersion(ctx, requested)
 }
 
 func (s *Server) handleTemplatesBuild(w http.ResponseWriter, r *http.Request) {
@@ -257,6 +279,15 @@ func (s *Server) handleTemplatesBuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolved before a VMID is allocated: an unavailable version should
+	// cost the operator a few seconds and nothing else, rather than burning
+	// a VMID and failing ~25 minutes later at package install.
+	kv, err := s.resolveK8sVersion(r, input.k8sVersion)
+	if err != nil {
+		s.renderTemplatesPanel(w, r.Context(), session, conn, err.Error())
+		return
+	}
+
 	client, err := s.proxmoxClientFor(conn)
 	if err != nil {
 		s.renderTemplatesPanel(w, r.Context(), session, conn, err.Error())
@@ -273,9 +304,13 @@ func (s *Server) handleTemplatesBuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	spec := imagebuilder.BuildSpec(s.dataDir, input.flavor, input.k8sVersion, vmid, input.env)
+	spec := imagebuilder.BuildSpec(s.dataDir, input.flavor, kv, vmid, input.env)
 	connID, node, flavorID, dataDir := conn.ID, input.env.Node, input.flavor.ID, s.dataDir
-	requestedK8sVersion := input.k8sVersion
+	// The RESOLVED semver, not the raw form input: what gets recorded has to
+	// be what the image will actually contain, because cluster creation and
+	// the upgrade flow both trust this column to name the version baked into
+	// the template.
+	requestedK8sVersion := kv.Semver
 	spec.Step("Record template", func(c *jobs.Ctx) error {
 		// Resolve the actual semver here, not eagerly before the build starts:
 		// the image-builder repo (which config/kubernetes.json lives in) is

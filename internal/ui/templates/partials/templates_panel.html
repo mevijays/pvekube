@@ -46,8 +46,9 @@
         </div>
         <div>
           <label class="mb-1 block text-sm font-medium text-slate-300">Kubernetes version <span class="text-slate-500">(optional)</span></label>
-          <input type="text" name="k8s_version" placeholder="leave blank for image-builder's default"
+          <input type="text" name="k8s_version" placeholder="e.g. 1.36.2 — blank uses image-builder's default"
                  class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500">
+          <p class="mt-1 text-xs text-slate-500">Checked against the upstream package repository before the build starts, so an unavailable version fails here in seconds rather than 25 minutes into the build.</p>
         </div>
         <div>
           <label class="mb-1 block text-sm font-medium text-slate-300">Node</label>

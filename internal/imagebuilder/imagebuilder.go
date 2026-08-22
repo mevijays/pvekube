@@ -12,11 +12,14 @@
 package imagebuilder
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"pvekube/internal/jobs"
 	"pvekube/internal/proxmox"
@@ -277,7 +280,7 @@ func writeISOURLOverride(dataDir string) error {
 // inspect` — it is not a shell), so CMD here is just the make target name;
 // no "bash -c" wrapper. Working directory is set with -w rather than `cd`
 // for the same reason — there's no shell to run a `cd` in.
-func dockerRunArgs(dataDir string, env ConnEnv, extraEnv []string, makeTarget string) []string {
+func dockerRunArgs(dataDir string, env ConnEnv, extraEnv []string, makeTarget, containerName string) []string {
 	repoCapiDir := filepath.Join(RepoDir(dataDir), "images", "capi")
 	isoCache := filepath.Join(dataDir, "iso-cache")
 	os.MkdirAll(isoCache, 0o777)
@@ -291,6 +294,12 @@ func dockerRunArgs(dataDir string, env ConnEnv, extraEnv []string, makeTarget st
 		"-w", "/home/imagebuilder/images/capi",
 		"-v", repoCapiDir + ":/home/imagebuilder/images/capi",
 		"-v", isoCache + ":/home/imagebuilder/images/capi/downloaded_iso_path",
+	}
+	// Naming the container is what makes a timed-out build recoverable:
+	// killing the `docker run` client detaches from the container, it does
+	// not stop it, so without a name there's no handle to reap Packer with.
+	if containerName != "" {
+		args = append(args, "--name", containerName)
 	}
 	args = append(args, env.dockerEnvArgs()...)
 	for _, e := range extraEnv {
@@ -333,40 +342,121 @@ func ensurePackerJSON(dataDir string) error {
 // ValidateSpec runs `make validate-proxmox-<flavor>` — a fast (seconds),
 // side-effect-free syntax/config check that should always be run before
 // committing to a 25-35 minute build.
-func ValidateSpec(dataDir string, flavor OSFlavor, env ConnEnv) *jobs.Spec {
+func ValidateSpec(dataDir string, flavor OSFlavor, env ConnEnv, kv KubernetesVersion) *jobs.Spec {
 	var isoFile string
 	return jobs.NewSpec("template.validate", "Validate "+flavor.Label+" template config").
 		Step("Ensure image-builder checkout", EnsureRepoStep(dataDir)).
 		Step("Render packer.json", func(c *jobs.Ctx) error { return ensurePackerJSON(dataDir) }).
 		Step("Stage installer ISO on Proxmox", EnsureISOStagedStep(dataDir, flavor, env, &isoFile)).
 		Step("packer validate", func(c *jobs.Ctx) error {
-			extraEnv := append(packerFlagsEnv(env, 0), isoFileEnv(isoFile)...)
-			args := dockerRunArgs(dataDir, env, extraEnv, "validate-proxmox-"+flavor.ID)
+			extraEnv := append(packerFlagsEnv(env, 0, kv), isoFileEnv(isoFile)...)
+			args := dockerRunArgs(dataDir, env, extraEnv, "validate-proxmox-"+flavor.ID, "")
 			return runner.Run(c, c, "", nil, "docker", args...)
 		})
 }
+
+// BuildTimeout bounds a single template build. Generous — a slow host can
+// legitimately spend 35+ minutes here — but finite, because the failure mode
+// it exists for produces no output at all and would otherwise wait forever.
+const BuildTimeout = 90 * time.Minute
 
 // BuildSpec runs the real build. vmid is pre-allocated by the caller via
 // the Proxmox client (rather than left to Packer's default of "next free
 // ID at boot time") so PVEKube knows deterministically which VM/template
 // the result is, instead of parsing it back out of Packer's log output.
-func BuildSpec(dataDir string, flavor OSFlavor, k8sVersion string, vmid int, env ConnEnv) *jobs.Spec {
+func BuildSpec(dataDir string, flavor OSFlavor, kv KubernetesVersion, vmid int, env ConnEnv) *jobs.Spec {
 	var isoFile string
-	return jobs.NewSpec("template.build", "Build "+flavor.Label+" template (VMID "+fmt.Sprint(vmid)+")").
+	container := fmt.Sprintf("pvekube-build-%d", vmid)
+	title := "Build " + flavor.Label + " template (VMID " + fmt.Sprint(vmid) + ")"
+	if kv.Requested() {
+		title += " for Kubernetes " + kv.Semver
+	}
+	return jobs.NewSpec("template.build", title).
 		Step("Ensure image-builder checkout", EnsureRepoStep(dataDir)).
 		Step("Render packer.json", func(c *jobs.Ctx) error { return ensurePackerJSON(dataDir) }).
 		Step("Stage installer ISO on Proxmox", EnsureISOStagedStep(dataDir, flavor, env, &isoFile)).
 		Step("packer validate (pre-flight)", func(c *jobs.Ctx) error {
-			extraEnv := append(packerFlagsEnv(env, 0), isoFileEnv(isoFile)...)
-			args := dockerRunArgs(dataDir, env, extraEnv, "validate-proxmox-"+flavor.ID)
+			extraEnv := append(packerFlagsEnv(env, 0, kv), isoFileEnv(isoFile)...)
+			args := dockerRunArgs(dataDir, env, extraEnv, "validate-proxmox-"+flavor.ID, "")
 			return runner.Run(c, c, "", nil, "docker", args...)
 		}).
 		Step("packer build (20-35 minutes)", func(c *jobs.Ctx) error {
 			c.Logf("Building on node=%s storage=%s (format=%s) bridge=%s iso_pool=%s vmid=%d", env.Node, env.StoragePool, diskFormatOrDefault(env.DiskFormat), env.Bridge, env.ISOPool, vmid)
-			extraEnv := append(packerFlagsEnv(env, vmid), isoFileEnv(isoFile)...)
-			args := dockerRunArgs(dataDir, env, extraEnv, "build-proxmox-"+flavor.ID)
-			return runner.Run(c, c, "", nil, "docker", args...)
+			if kv.Requested() {
+				c.Logf("Kubernetes %s (deb %s, rpm %s, series %s)", kv.Semver, kv.DebVersion, kv.RPMVersion, kv.Series)
+			} else {
+				c.Logf("Kubernetes version: image-builder's pinned default (no version was requested)")
+			}
+			extraEnv := append(packerFlagsEnv(env, vmid, kv), isoFileEnv(isoFile)...)
+			args := dockerRunArgs(dataDir, env, extraEnv, "build-proxmox-"+flavor.ID, container)
+
+			// Bounded so a wedged Packer fails instead of hanging forever.
+			// This is not hypothetical: image-builder's own packer.json
+			// reboots the guest and then allows a fixed 10s before running
+			// Ansible, and on a loaded host the VM isn't back in time. Packer
+			// then reports "ssh: handshake failed: EOF" and the Ansible ssh
+			// client blocks indefinitely — its ConnectTimeout only covers the
+			// TCP connect, which succeeds instantly against Packer's local
+			// proxy adapter, so nothing bounds the dead handshake. Observed
+			// live: a build sat wedged with flat CPU until killed by hand,
+			// and because templateBuildInProgress (handlers_templates.go)
+			// treats a running build as a global lock, it blocked every
+			// subsequent build on every connection too.
+			ctx, cancel := context.WithTimeout(c, BuildTimeout)
+			defer cancel()
+			err := runner.Run(ctx, c, "", nil, "docker", args...)
+
+			if ctx.Err() == context.DeadlineExceeded {
+				// By this point runner.Run has already tried the graceful
+				// path: it sends SIGTERM (not SIGKILL) on ctx cancellation,
+				// docker's CLI forwards that into the container, and Packer
+				// catches it to stop+delete the build VM itself before
+				// exiting — confirmed live, this is the common case and it
+				// finishes in a few seconds. `docker rm -f` here is only the
+				// fallback for when that graceful shutdown didn't finish
+				// within runner.Run's WaitDelay: killing the LOCAL `docker
+				// run` client detaches rather than stopping the container,
+				// which would otherwise keep running (and keep holding the
+				// build VM) after the job has already failed.
+				c.Logf("Build exceeded %s — ensuring container %s is stopped", BuildTimeout, container)
+				rm := exec.Command("docker", "rm", "-f", container)
+				rm.CombinedOutput() // best-effort; a "no such container" failure here just means Packer's own graceful cleanup (above) already removed it
+
+				// The container's fate says nothing definitive about the
+				// Proxmox VM it created — Packer may have gotten far enough
+				// to delete the container but not the VM, or vice versa. Only
+				// asserting cleanup status after checking Proxmox directly is
+				// what fixed a real false report: this exact path once
+				// logged "VM was left behind and needs deleting by hand" for
+				// a VM Packer's own graceful shutdown had already deleted.
+				return reportBuildTimeout(c, env, vmid)
+			}
+			return err
 		})
+}
+
+// reportBuildTimeout checks Proxmox directly for whether the build VM
+// actually still exists before deciding what to tell the operator, rather
+// than assuming either outcome. Three distinct cases, three distinct
+// messages: confirmed gone (nothing to do), confirmed still there (name the
+// exact VMID to delete), or unknown (the check itself failed — say so rather
+// than guessing, since a network hiccup here must never be reported as
+// either a successful or a failed cleanup).
+func reportBuildTimeout(c *jobs.Ctx, env ConnEnv, vmid int) error {
+	client := proxmox.New(proxmox.Config{URL: env.URL, TokenID: env.TokenID, Secret: env.Secret, InsecureSkipVerify: env.InsecureTLS})
+	checkCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	exists, err := client.VMExists(checkCtx, env.Node, vmid)
+	switch {
+	case err != nil:
+		c.Logf("Could not confirm whether Proxmox VM %d still exists: %v — check node %s by hand.", vmid, err, env.Node)
+	case exists:
+		c.Logf("Proxmox VM %d is still present on node %s and needs deleting by hand before retrying.", vmid, env.Node)
+	default:
+		c.Logf("Confirmed: Proxmox VM %d no longer exists — Packer's own cleanup already removed it, nothing further to do.", vmid)
+	}
+	return fmt.Errorf("template build exceeded %s and was aborted", BuildTimeout)
 }
 
 // diskFormatOrDefault falls back to image-builder's own Packer template
@@ -384,7 +474,7 @@ func diskFormatOrDefault(f string) string {
 // pools reject image-builder's unconditional "qcow2" default outright
 // ("unsupported format 'qcow2'"), so this can't be left unset even though
 // nothing else in the var-file chain happens to override it.
-func packerFlagsEnv(env ConnEnv, vmid int) []string {
+func packerFlagsEnv(env ConnEnv, vmid int, kv KubernetesVersion) []string {
 	flags := "--var disk_format=" + diskFormatOrDefault(env.DiskFormat)
 	if vmid > 0 {
 		flags += fmt.Sprintf(" --var vmid=%d", vmid)
@@ -398,6 +488,9 @@ func packerFlagsEnv(env ConnEnv, vmid int) []string {
 	// present there (part of Ubuntu Server's stock package set), so it's deliberately
 	// not duplicated here. Debian-only; harmless no-op on RPM/Flatcar flavors.
 	flags += ` --var extra_debs="nfs-common"`
+	// Empty unless an explicit version was requested, so a default build
+	// still runs on image-builder's own pinned versions exactly as before.
+	flags += kv.packerVars()
 	return []string{"PACKER_FLAGS=" + flags}
 }
 

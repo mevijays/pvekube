@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 )
 
 // Snapshot is everything downstream screens (template builder, cluster
@@ -269,6 +270,25 @@ func (c *Client) nextVMID(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("parsing nextid %q: %w", idStr, err)
 	}
 	return id, nil
+}
+
+// VMExists reports whether a VM/template is still present on a node.
+// Proxmox's own behaviour here is easy to get wrong: a missing VM's status
+// query does NOT return 404 — it returns HTTP 500 with a body like
+// "Configuration file 'nodes/<node>/qemu-server/<vmid>.conf' does not
+// exist" (confirmed against a real cluster). Any OTHER failure (network,
+// auth) is returned as an error rather than folded into "gone", so a
+// transient API hiccup can never be misreported as a successful cleanup.
+func (c *Client) VMExists(ctx context.Context, node string, vmid int) (bool, error) {
+	var status map[string]any
+	err := c.do(ctx, http.MethodGet, fmt.Sprintf("/nodes/%s/qemu/%d/status/current", node, vmid), nil, &status)
+	if err == nil {
+		return true, nil
+	}
+	if ae, ok := err.(*apiError); ok && ae.Status == http.StatusInternalServerError && strings.Contains(ae.Body, "does not exist") {
+		return false, nil
+	}
+	return false, err
 }
 
 // DeleteVM deletes a VM or template by VMID (DELETE /nodes/{node}/qemu/{vmid})
