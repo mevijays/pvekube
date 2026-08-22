@@ -58,6 +58,13 @@ const (
 	// post-provision addon.
 	MetalLBVersion = "v0.14.9"
 
+	// FluxVersion pins the install.yaml applied for the optional "GitOps"
+	// addon. Flux 2.9 requires Kubernetes >= 1.33 (>= 1.35.0 on the 1.35+
+	// line) per fluxcd.io's own compatibility matrix — comfortably satisfied
+	// by every template this app builds, but worth re-checking before
+	// bumping either side.
+	FluxVersion = "v2.9.4"
+
 	// ImageBuilderImage is the official containerized image-builder used to build
 	// Proxmox VM templates without installing Packer/Ansible/Go toolchains on the host.
 	ImageBuilderImage = "registry.k8s.io/scl-image-builder/cluster-node-image-builder-amd64:v0.1.55"
@@ -100,6 +107,20 @@ func MetricsServerManifestURL() string {
 func MetalLBManifestURL() string {
 	return "https://raw.githubusercontent.com/metallb/metallb/" +
 		MetalLBVersion + "/config/manifests/metallb-native.yaml"
+}
+
+// FluxManifestURL is the pinned Flux install manifest — every controller,
+// CRD and the flux-system namespace in one file, so the addon needs no
+// separate namespace step and no `flux` CLI binary.
+//
+// Applied with a plain `kubectl apply`, deliberately: Flux's largest CRD
+// (helmreleases, ~76KB) sits well under kubectl's 262144-byte
+// last-applied-configuration annotation limit, so this does NOT need the
+// --server-side workaround that ArgoCD's oversized applicationsets CRD
+// forces. Verified by measuring the real manifest, not assumed.
+func FluxManifestURL() string {
+	return "https://github.com/fluxcd/flux2/releases/download/" +
+		FluxVersion + "/install.yaml"
 }
 
 // IstioctlDownloadURL is istioctl's release asset — a flat tar.gz containing

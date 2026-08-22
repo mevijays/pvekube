@@ -227,6 +227,17 @@ func (s *Server) parseClusterForm(r *http.Request, connID int64) (clusterForm, e
 			Istio:         r.FormValue("install_istio") == "1",
 			MetalLB:       r.FormValue("install_metallb") == "1",
 			MetalLBIPPool: strings.TrimSpace(r.FormValue("metallb_ip_pool")),
+
+			GitOps:         r.FormValue("install_gitops") == "1",
+			GitOpsRepoURL:  strings.TrimSpace(r.FormValue("gitops_repo_url")),
+			GitOpsBranch:   strings.TrimSpace(r.FormValue("gitops_branch")),
+			GitOpsPath:     strings.TrimSpace(r.FormValue("gitops_path")),
+			GitOpsUsername: strings.TrimSpace(r.FormValue("gitops_username")),
+			// Trimmed for the same reason the registry password is: a pasted
+			// trailing space is invisible in the form and silently breaks the
+			// basic-auth header Flux builds from it.
+			GitOpsToken:  strings.TrimSpace(r.FormValue("gitops_token")),
+			GitOpsCACert: strings.TrimSpace(r.FormValue("gitops_ca_cert")),
 		},
 		registry: capi.RegistryConfig{
 			Host:      capi.NormalizeRegistryHost(r.FormValue("registry_host")),
@@ -258,6 +269,9 @@ func (s *Server) parseClusterForm(r *http.Request, connID int64) (clusterForm, e
 		return f, err
 	}
 	if err := validateOIDCForm(f.oidc); err != nil {
+		return f, err
+	}
+	if err := validateGitOpsForm(f.addons); err != nil {
 		return f, err
 	}
 	for _, s := range strings.Split(r.FormValue("dns_servers"), ",") {
@@ -346,6 +360,51 @@ func validateOIDCForm(oidc capi.OIDCConfig) error {
 	return nil
 }
 
+// validateGitOpsForm mirrors validateRegistryForm/validateOIDCForm: same
+// "either configured or empty" contract, same real-PEM check on the CA.
+func validateGitOpsForm(a capi.AddonSelection) error {
+	if !a.GitOps {
+		if a.GitOpsRepoURL != "" || a.GitOpsToken != "" || a.GitOpsCACert != "" {
+			return errBadInput("GitOps settings were given but the GitOps checkbox is not ticked")
+		}
+		return nil
+	}
+	if a.GitOpsRepoURL == "" {
+		return errBadInput("GitOps is checked but no repository URL was given")
+	}
+	// Flux requires a full scheme and rejects the scp-style shorthand
+	// outright (per its GitRepository API docs), so catch it here rather
+	// than letting source-controller fail after the cluster is already up.
+	switch {
+	case strings.HasPrefix(a.GitOpsRepoURL, "https://"), strings.HasPrefix(a.GitOpsRepoURL, "http://"):
+	case strings.HasPrefix(a.GitOpsRepoURL, "ssh://"):
+	default:
+		if strings.Contains(a.GitOpsRepoURL, "@") && strings.Contains(a.GitOpsRepoURL, ":") {
+			return errBadInput("GitOps repository URL must be a full URL — Flux does not accept the scp-style form; use ssh://git@host/path/repo.git instead")
+		}
+		return errBadInput("GitOps repository URL must start with https://, http:// or ssh://")
+	}
+	// SSH auth needs an identity + known_hosts pair, which this form doesn't
+	// collect — refusing is honest, whereas accepting would produce a
+	// cluster whose Flux can never authenticate.
+	if strings.HasPrefix(a.GitOpsRepoURL, "ssh://") && a.GitOpsToken != "" {
+		return errBadInput("a token cannot authenticate an ssh:// repository — use an https:// URL for token auth, or make the repository readable without credentials")
+	}
+	if ca := a.GitOpsCACert; ca != "" {
+		block, _ := pem.Decode([]byte(ca))
+		if block == nil {
+			return errBadInput("GitOps CA certificate is not valid PEM — it should start with -----BEGIN CERTIFICATE-----")
+		}
+		if block.Type != "CERTIFICATE" {
+			return errBadInput("GitOps CA must be a CERTIFICATE PEM block, got " + block.Type)
+		}
+		if _, err := x509.ParseCertificate(block.Bytes); err != nil {
+			return errBadInput("GitOps CA certificate could not be parsed: " + err.Error())
+		}
+	}
+	return nil
+}
+
 func atoiDefault(s string, def int) int {
 	n, err := strconv.Atoi(s)
 	if err != nil {
@@ -415,6 +474,9 @@ func (s *Server) handleClustersPreview(w http.ResponseWriter, r *http.Request) {
 	if f.registry.Password != "" {
 		s.redactor.Track(f.registry.Password)
 	}
+	if f.addons.GitOpsToken != "" {
+		s.redactor.Track(f.addons.GitOpsToken)
+	}
 
 	cctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
@@ -428,6 +490,10 @@ func (s *Server) handleClustersPreview(w http.ResponseWriter, r *http.Request) {
 		"ClusterName": f.name, "TemplateID": f.templateID, "YAML": yaml, "CSRF": s.csrfFor(session), "CNI": string(f.cni),
 		"InstallMetricsServer": f.addons.MetricsServer, "InstallIstio": f.addons.Istio,
 		"InstallMetalLB": f.addons.MetalLB, "MetalLBIPPool": f.addons.MetalLBIPPool,
+		"InstallGitOps": f.addons.GitOps,
+		"GitOpsRepoURL": f.addons.GitOpsRepoURL, "GitOpsBranch": f.addons.GitOpsBranch,
+		"GitOpsPath": f.addons.GitOpsPath, "GitOpsUsername": f.addons.GitOpsUsername,
+		"GitOpsToken": f.addons.GitOpsToken, "GitOpsCACert": f.addons.GitOpsCACert,
 		"RegistryHost": f.registry.Host, "RegistryCACert": f.registry.CACertPEM,
 		"RegistryUsername": f.registry.Username, "RegistryPassword": f.registry.Password,
 		"RegistryInsecure": f.registry.Enabled() && f.registry.CACertPEM == "",
@@ -490,6 +556,19 @@ func (s *Server) handleClustersApply(w http.ResponseWriter, r *http.Request) {
 		Istio:         r.FormValue("install_istio") == "1",
 		MetalLB:       r.FormValue("install_metallb") == "1",
 		MetalLBIPPool: strings.TrimSpace(r.FormValue("metallb_ip_pool")),
+
+		GitOps:         r.FormValue("install_gitops") == "1",
+		GitOpsRepoURL:  strings.TrimSpace(r.FormValue("gitops_repo_url")),
+		GitOpsBranch:   strings.TrimSpace(r.FormValue("gitops_branch")),
+		GitOpsPath:     strings.TrimSpace(r.FormValue("gitops_path")),
+		GitOpsUsername: strings.TrimSpace(r.FormValue("gitops_username")),
+		GitOpsToken:    strings.TrimSpace(r.FormValue("gitops_token")),
+		GitOpsCACert:   strings.TrimSpace(r.FormValue("gitops_ca_cert")),
+	}
+	// Same treatment as the registry password: keep the Git token out of the
+	// job log, the rendered manifest, and anything else the redactor covers.
+	if addons.GitOpsToken != "" {
+		s.redactor.Track(addons.GitOpsToken)
 	}
 	// The manifest already carries the CA/containerd config from preview
 	// time; only the credentials are still needed here, to build the
@@ -535,6 +614,13 @@ func (s *Server) handleClustersApply(w http.ResponseWriter, r *http.Request) {
 		OIDCGroupsClaim:       oidcDefaults.GroupsClaim,
 		OIDCCACert:            oidcDefaults.CACertPEM,
 		OIDCDefaultUsersGroup: oidcDefaults.DefaultUsersGroup,
+
+		GitOpsRepoURL:  addons.GitOpsRepoURL,
+		GitOpsBranch:   addons.GitOpsBranch,
+		GitOpsPath:     addons.GitOpsPath,
+		GitOpsUsername: addons.GitOpsUsername,
+		GitOpsToken:    addons.GitOpsToken,
+		GitOpsCACert:   addons.GitOpsCACert,
 	})
 	spec := capi.ApplySpec(name, s.dataDir, s.binDir, capi.ClusterConnection{
 		ID: conn.ID, URL: proxmox.NormalizeURL(conn.URL), TokenID: conn.TokenID,

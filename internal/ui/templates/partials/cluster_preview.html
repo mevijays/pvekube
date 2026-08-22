@@ -21,6 +21,12 @@
     {{if .RegistryInsecure}}<span class="text-amber-400">(TLS verification skipped — no CA given)</span>{{else}}(via the CA in the manifest above){{end}}{{if .RegistryUsername}}, with pull credentials applied separately as a Secret{{end}}.
   </p>
   {{end}}
+  {{if .InstallGitOps}}
+  <p class="text-xs text-slate-500">
+    <i class="fa fa-code-fork mr-1"></i>Flux will sync <code class="text-slate-300">{{.GitOpsRepoURL}}</code>{{if .GitOpsBranch}} (branch {{.GitOpsBranch}}){{end}}{{if .GitOpsPath}}, path <code class="text-slate-300">{{.GitOpsPath}}</code>{{end}}.
+    Anything committed there is applied automatically — PVEKube only reads the repo, it never commits to it.
+  </p>
+  {{end}}
   {{if .OIDCEnabled}}
   <p class="text-xs text-slate-500">
     <i class="fa fa-key mr-1"></i>API server will authenticate via OIDC — issuer <code class="text-slate-300">{{.OIDCIssuerURL}}</code>, client ID <code class="text-slate-300">{{.OIDCClientID}}</code>.
@@ -57,6 +63,13 @@
     <textarea name="oidc_ca_cert" class="hidden">{{.OIDCCACert}}</textarea>
     {{if .OIDCDefaultUsersGroup}}<input type="hidden" name="oidc_default_users_group" value="{{.OIDCDefaultUsersGroup}}">{{end}}
     {{end}}
+    {{if .InstallGitOps}}<input type="hidden" name="install_gitops" value="1">
+    <input type="hidden" name="gitops_repo_url" value="{{.GitOpsRepoURL}}">
+    <input type="hidden" name="gitops_branch" value="{{.GitOpsBranch}}">
+    <input type="hidden" name="gitops_path" value="{{.GitOpsPath}}">
+    <input type="hidden" name="gitops_username" value="{{.GitOpsUsername}}">
+    <input type="hidden" name="gitops_token" value="{{.GitOpsToken}}">
+    <textarea name="gitops_ca_cert" class="hidden">{{.GitOpsCACert}}</textarea>{{end}}
     <textarea name="manifest_yaml" class="hidden">{{.YAML}}</textarea>
     <button type="submit" data-loading-text="Launching cluster..." class="rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700">
       <i class="fa fa-rocket mr-1.5"></i>Apply — launch this cluster

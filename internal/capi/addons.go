@@ -6,6 +6,7 @@
 package capi
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -27,6 +28,39 @@ type AddonSelection struct {
 	Istio         bool
 	MetalLB       bool
 	MetalLBIPPool string // e.g. "10.10.10.90-10.10.10.99" or CIDR, required if MetalLB is true
+
+	// GitOps installs Flux and points it at a Git repository, so everything
+	// else the cluster should run can be declared in that repo rather than
+	// applied by hand afterwards. See InstallGitOpsStep.
+	GitOps         bool
+	GitOpsRepoURL  string // https://... or ssh://... — Flux rejects scp-style git@host:repo
+	GitOpsBranch   string // defaults to "main"
+	GitOpsPath     string // path within the repo to reconcile; defaults to "./"
+	GitOpsUsername string // optional, private repos over HTTPS
+	GitOpsToken    string // optional, the password/PAT half of the above — SECRET
+	GitOpsCACert   string // optional PEM, for a Git host using an internal CA
+}
+
+// gitOpsBranchOrDefault / gitOpsPathOrDefault keep the defaults in one place
+// so the installed Kustomization and the UI preview can't disagree.
+func (a AddonSelection) gitOpsBranchOrDefault() string {
+	if b := strings.TrimSpace(a.GitOpsBranch); b != "" {
+		return b
+	}
+	return "main"
+}
+
+func (a AddonSelection) gitOpsPathOrDefault() string {
+	if p := strings.TrimSpace(a.GitOpsPath); p != "" {
+		return p
+	}
+	return "./"
+}
+
+// GitOpsNeedsAuth reports whether a credentials Secret has to be created for
+// the repository (i.e. it is private, or served by an internal CA).
+func (a AddonSelection) GitOpsNeedsAuth() bool {
+	return strings.TrimSpace(a.GitOpsToken) != "" || strings.TrimSpace(a.GitOpsCACert) != ""
 }
 
 type nodeStatusJSON struct {
@@ -353,5 +387,233 @@ func AddonSteps(spec *jobs.Spec, dataDir, binDir, clusterName string, addons Add
 	if addons.MetalLB {
 		spec.Step("Install MetalLB", InstallMetalLBStep(dataDir, binDir, clusterName, addons.MetalLBIPPool))
 	}
+	// Last on purpose: whatever the Git repository deploys may expect the
+	// other addons to already exist (a Service of type LoadBalancer needs
+	// MetalLB, a sidecar-injected Deployment needs Istio). Flux reconciles
+	// asynchronously so this is not a hard guarantee, but it removes the
+	// obvious race rather than leaving it to chance.
+	if addons.GitOps {
+		spec.Step("Install GitOps (Flux)", InstallGitOpsStep(dataDir, binDir, clusterName, addons))
+	}
 	return spec
+}
+
+// gitOpsNamespace / gitOpsResourceName are fixed: one PVEKube-managed GitOps
+// source per cluster. Names are stable across re-applies so the step is
+// idempotent rather than accumulating duplicates.
+const (
+	gitOpsNamespace    = "flux-system"
+	gitOpsResourceName = "pvekube-gitops"
+	gitOpsSecretName   = "pvekube-gitops-auth"
+)
+
+// InstallGitOpsStep installs Flux and points it at the operator's Git
+// repository, so the cluster continues configuring itself from that repo
+// after PVEKube's job finishes.
+//
+// This deliberately does NOT use `flux bootstrap`. Bootstrap commits Flux's
+// own manifests into the target repository and therefore needs write-scoped
+// credentials — a surprising side effect for a "create cluster" action, and
+// a much larger grant than this needs. Applying the pinned install.yaml and
+// creating the GitRepository/Kustomization directly achieves the same
+// outcome with read-only access, no commits into someone else's repo, and
+// no extra CLI binary to download and pin (it reuses kubectl, exactly like
+// the MetalLB and metrics-server addons).
+func InstallGitOpsStep(dataDir, binDir, clusterName string, addons AddonSelection) func(*jobs.Ctx) error {
+	return func(c *jobs.Ctx) error {
+		kcPath, cleanup, err := waitForWorkloadKubeconfig(c, dataDir, binDir, clusterName, "installing Flux (GitOps)")
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+
+		kubectlBin := filepath.Join(binDir, "kubectl")
+
+		// install.yaml carries the flux-system namespace, every CRD and all
+		// controllers. A plain apply is enough here — see FluxManifestURL's
+		// comment on why this needs no --server-side.
+		c.Logf("Applying Flux %s", versions.FluxVersion)
+		if err := runner.Run(c, c, "", nil, kubectlBin, "--kubeconfig", kcPath,
+			"apply", "-f", versions.FluxManifestURL()); err != nil {
+			return fmt.Errorf("applying Flux: %w", err)
+		}
+
+		// source-controller fetches the repo, kustomize-controller applies
+		// it; both must exist before the CRs below mean anything.
+		for _, deploy := range []string{"source-controller", "kustomize-controller"} {
+			c.Logf("Waiting for %s to become available...", deploy)
+			if err := runner.Run(c, c, "", nil, kubectlBin, "--kubeconfig", kcPath,
+				"wait", "--for=condition=Available", "deployment/"+deploy,
+				"-n", gitOpsNamespace, "--timeout=300s"); err != nil {
+				return fmt.Errorf("waiting for Flux's %s: %w", deploy, err)
+			}
+		}
+
+		if addons.GitOpsNeedsAuth() {
+			if err := createGitOpsSecret(c, kubectlBin, kcPath, addons); err != nil {
+				return err
+			}
+		}
+
+		if err := applyGitOpsSource(c, dataDir, kubectlBin, kcPath, addons); err != nil {
+			return err
+		}
+
+		return waitForGitOpsSync(c, kubectlBin, kcPath, addons)
+	}
+}
+
+// createGitOpsSecret writes the repository credentials into flux-system.
+//
+// Nothing here goes through runner.Run, which echoes the command it runs
+// into the job log — that would put the Git token into a file on disk and
+// stream it to the browser. Same reasoning, and same shape, as
+// InstallRegistryCredentialsStep in registry.go.
+//
+// Key names are Flux's, not ours, and are easy to get subtly wrong:
+// username/password for HTTPS basic auth (a PAT goes in "password"), and
+// "ca.crt" for a custom CA — verified against Flux's GitRepository API
+// docs rather than recalled.
+func createGitOpsSecret(c *jobs.Ctx, kubectlBin, kcPath string, addons AddonSelection) error {
+	args := []string{"--kubeconfig", kcPath, "create", "secret", "generic", gitOpsSecretName,
+		"-n", gitOpsNamespace, "--dry-run=client", "-o", "yaml"}
+
+	if tok := strings.TrimSpace(addons.GitOpsToken); tok != "" {
+		user := strings.TrimSpace(addons.GitOpsUsername)
+		if user == "" {
+			// Most Git forges ignore the username for token auth but still
+			// require the field to be non-empty for basic auth to be sent.
+			user = "git"
+		}
+		args = append(args, "--from-literal=username="+user, "--from-literal=password="+tok)
+	}
+
+	var caFile string
+	if ca := strings.TrimSpace(addons.GitOpsCACert); ca != "" {
+		f, err := os.CreateTemp("", "gitops-ca-*.pem")
+		if err != nil {
+			return err
+		}
+		caFile = f.Name()
+		defer os.Remove(caFile)
+		if _, err := f.WriteString(ca + "\n"); err != nil {
+			f.Close()
+			return err
+		}
+		f.Close()
+		args = append(args, "--from-file=ca.crt="+caFile)
+	}
+
+	var rendered bytes.Buffer
+	createCmd := exec.CommandContext(c, kubectlBin, args...)
+	createCmd.Stdout = &rendered
+	var createErr bytes.Buffer
+	createCmd.Stderr = &createErr
+	if err := createCmd.Run(); err != nil {
+		return fmt.Errorf("rendering GitOps credentials Secret: %w\n%s", err, createErr.String())
+	}
+
+	applyCmd := exec.CommandContext(c, kubectlBin, "--kubeconfig", kcPath, "apply", "-f", "-")
+	applyCmd.Stdin = bytes.NewReader(rendered.Bytes())
+	var applyOut bytes.Buffer
+	applyCmd.Stdout, applyCmd.Stderr = &applyOut, &applyOut
+	if err := applyCmd.Run(); err != nil {
+		return fmt.Errorf("applying GitOps credentials Secret: %w\n%s", err, applyOut.String())
+	}
+	c.Logf("Secret %s/%s created for the Git repository", gitOpsNamespace, gitOpsSecretName)
+	return nil
+}
+
+// applyGitOpsSource creates the GitRepository (what to fetch) and the
+// Kustomization (what to apply from it).
+//
+// targetNamespace is deliberately NOT set: leaving it unset lets the
+// repository's own manifests declare their namespaces, which is what an
+// operator putting "all the possible app deployments" in a repo expects.
+// Setting it would force every object into a single namespace instead.
+func applyGitOpsSource(c *jobs.Ctx, dataDir, kubectlBin, kcPath string, addons AddonSelection) error {
+	secretRef := ""
+	if addons.GitOpsNeedsAuth() {
+		secretRef = fmt.Sprintf("\n  secretRef:\n    name: %s", gitOpsSecretName)
+	}
+
+	// prune: true garbage-collects objects this Kustomization previously
+	// applied but that have since left the repo — scoped to its own
+	// inventory, so it can never touch anything PVEKube or another addon
+	// installed.
+	srcYAML := fmt.Sprintf(`apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  interval: 1m
+  url: %s
+  ref:
+    branch: %s%s
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: %s
+  namespace: %s
+spec:
+  interval: 10m
+  path: %q
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: %s
+`, gitOpsResourceName, gitOpsNamespace, addons.GitOpsRepoURL, addons.gitOpsBranchOrDefault(), secretRef,
+		gitOpsResourceName, gitOpsNamespace, addons.gitOpsPathOrDefault(), gitOpsResourceName)
+
+	f, err := os.CreateTemp(dataDir, "gitops-source-*.yaml")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.WriteString(srcYAML); err != nil {
+		f.Close()
+		return err
+	}
+	f.Close()
+
+	c.Logf("Pointing Flux at %s (branch %s, path %s)", addons.GitOpsRepoURL, addons.gitOpsBranchOrDefault(), addons.gitOpsPathOrDefault())
+	if err := runner.Run(c, c, "", nil, kubectlBin, "--kubeconfig", kcPath, "apply", "-f", f.Name()); err != nil {
+		return fmt.Errorf("creating GitRepository/Kustomization: %w", err)
+	}
+	return nil
+}
+
+// waitForGitOpsSync blocks until Flux has actually fetched the repository.
+//
+// This is the difference between a job that reports success and a cluster
+// that really is wired up. Everything before this point succeeds even when
+// the URL is wrong, the token is invalid, the branch doesn't exist, or the
+// Git host can't be resolved from inside the cluster — the CRs apply fine,
+// and the failure only ever appears in a controller's status field that
+// nobody thinks to look at. Waiting on Ready surfaces it here, and the
+// condition message Flux sets says exactly which of those it was.
+func waitForGitOpsSync(c *jobs.Ctx, kubectlBin, kcPath string, addons AddonSelection) error {
+	c.Logf("Waiting for Flux to fetch the repository (this is where a bad URL, token or DNS failure shows up)...")
+	err := runner.Run(c, c, "", nil, kubectlBin, "--kubeconfig", kcPath,
+		"wait", "--for=condition=Ready", "gitrepository/"+gitOpsResourceName,
+		"-n", gitOpsNamespace, "--timeout=120s")
+	if err == nil {
+		c.Logf("✓ Flux is syncing %s — anything committed under %s will now be applied automatically.",
+			addons.GitOpsRepoURL, addons.gitOpsPathOrDefault())
+		return nil
+	}
+
+	// Surface Flux's own diagnosis rather than just "timed out".
+	msg, statusErr := exec.CommandContext(c, kubectlBin, "--kubeconfig", kcPath,
+		"get", "gitrepository", gitOpsResourceName, "-n", gitOpsNamespace,
+		"-o", `jsonpath={.status.conditions[?(@.type=="Ready")].message}`).Output()
+	detail := strings.TrimSpace(string(msg))
+	if statusErr != nil || detail == "" {
+		detail = "no status reported yet"
+	}
+	c.Logf("Flux could not fetch the repository: %s", detail)
+	c.Logf("Flux is installed and will keep retrying on its own; fix the cause and it will sync without recreating the cluster.")
+	return fmt.Errorf("Flux could not fetch %s: %s", addons.GitOpsRepoURL, detail)
 }

@@ -31,6 +31,15 @@ type clusterDefaults struct {
 	// grants the built-in "view" ClusterRole to automatically — see its doc
 	// comment (internal/capi/oidc.go) for why this exists.
 	OIDCDefaultUsersGroup string
+
+	// GitOps (Flux) settings. GitOpsToken is a real secret and is sealed at
+	// rest like RegistryPassword; the rest are plain.
+	GitOpsRepoURL  string
+	GitOpsBranch   string
+	GitOpsPath     string
+	GitOpsUsername string
+	GitOpsToken    string
+	GitOpsCACert   string
 }
 
 // loadClusterDefaults reads the remembered inputs. A missing row (nothing
@@ -38,12 +47,14 @@ type clusterDefaults struct {
 // as an empty form exactly as before this feature existed.
 func (s *Server) loadClusterDefaults() clusterDefaults {
 	var d clusterDefaults
-	var sealed []byte
+	var sealed, gitopsSealed []byte
 	row := s.db.QueryRow(`SELECT vm_ssh_keys, registry_host, registry_ca_cert, registry_username, registry_password_sealed,
-	                              oidc_provider, oidc_issuer_url, oidc_client_id, oidc_username_claim, oidc_groups_claim, oidc_ca_cert, oidc_default_users_group
+	                              oidc_provider, oidc_issuer_url, oidc_client_id, oidc_username_claim, oidc_groups_claim, oidc_ca_cert, oidc_default_users_group,
+	                              gitops_repo_url, gitops_branch, gitops_path, gitops_username, gitops_token_sealed, gitops_ca_cert
 	                        FROM cluster_defaults WHERE id = 1`)
 	if err := row.Scan(&d.VMSSHKeys, &d.RegistryHost, &d.RegistryCACert, &d.RegistryUsername, &sealed,
-		&d.OIDCProvider, &d.OIDCIssuerURL, &d.OIDCClientID, &d.OIDCUsernameClaim, &d.OIDCGroupsClaim, &d.OIDCCACert, &d.OIDCDefaultUsersGroup); err != nil {
+		&d.OIDCProvider, &d.OIDCIssuerURL, &d.OIDCClientID, &d.OIDCUsernameClaim, &d.OIDCGroupsClaim, &d.OIDCCACert, &d.OIDCDefaultUsersGroup,
+		&d.GitOpsRepoURL, &d.GitOpsBranch, &d.GitOpsPath, &d.GitOpsUsername, &gitopsSealed, &d.GitOpsCACert); err != nil {
 		if err != sql.ErrNoRows {
 			slog.Warn("loading cluster defaults", "err", err)
 		}
@@ -58,6 +69,15 @@ func (s *Server) loadClusterDefaults() clusterDefaults {
 		} else {
 			d.RegistryPassword = pw
 			s.redactor.Track(pw)
+		}
+	}
+	if len(gitopsSealed) > 0 {
+		tok, err := s.sealer.Open(gitopsSealed)
+		if err != nil {
+			slog.Warn("unsealing remembered GitOps token", "err", err)
+		} else {
+			d.GitOpsToken = tok
+			s.redactor.Track(tok)
 		}
 	}
 	return d
@@ -87,6 +107,23 @@ func (s *Server) saveClusterDefaults(d clusterDefaults) {
 		OIDCGroupsClaim:       firstNonEmpty(d.OIDCGroupsClaim, cur.OIDCGroupsClaim),
 		OIDCCACert:            firstNonEmpty(d.OIDCCACert, cur.OIDCCACert),
 		OIDCDefaultUsersGroup: firstNonEmpty(d.OIDCDefaultUsersGroup, cur.OIDCDefaultUsersGroup),
+
+		GitOpsRepoURL:  firstNonEmpty(d.GitOpsRepoURL, cur.GitOpsRepoURL),
+		GitOpsBranch:   firstNonEmpty(d.GitOpsBranch, cur.GitOpsBranch),
+		GitOpsPath:     firstNonEmpty(d.GitOpsPath, cur.GitOpsPath),
+		GitOpsUsername: firstNonEmpty(d.GitOpsUsername, cur.GitOpsUsername),
+		GitOpsToken:    firstNonEmpty(d.GitOpsToken, cur.GitOpsToken),
+		GitOpsCACert:   firstNonEmpty(d.GitOpsCACert, cur.GitOpsCACert),
+	}
+
+	var gitopsSealed []byte
+	if merged.GitOpsToken != "" {
+		b, err := s.sealer.Seal(merged.GitOpsToken)
+		if err != nil {
+			slog.Warn("sealing GitOps token for defaults", "err", err)
+		} else {
+			gitopsSealed = b
+		}
 	}
 
 	var sealed []byte
@@ -101,8 +138,9 @@ func (s *Server) saveClusterDefaults(d clusterDefaults) {
 
 	if _, err := s.db.Exec(`
 		INSERT INTO cluster_defaults (id, vm_ssh_keys, registry_host, registry_ca_cert, registry_username, registry_password_sealed,
-		                              oidc_provider, oidc_issuer_url, oidc_client_id, oidc_username_claim, oidc_groups_claim, oidc_ca_cert, oidc_default_users_group, updated_at)
-		VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		                              oidc_provider, oidc_issuer_url, oidc_client_id, oidc_username_claim, oidc_groups_claim, oidc_ca_cert, oidc_default_users_group,
+		                              gitops_repo_url, gitops_branch, gitops_path, gitops_username, gitops_token_sealed, gitops_ca_cert, updated_at)
+		VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(id) DO UPDATE SET
 			vm_ssh_keys = excluded.vm_ssh_keys,
 			registry_host = excluded.registry_host,
@@ -116,9 +154,16 @@ func (s *Server) saveClusterDefaults(d clusterDefaults) {
 			oidc_groups_claim = excluded.oidc_groups_claim,
 			oidc_ca_cert = excluded.oidc_ca_cert,
 			oidc_default_users_group = excluded.oidc_default_users_group,
+			gitops_repo_url = excluded.gitops_repo_url,
+			gitops_branch = excluded.gitops_branch,
+			gitops_path = excluded.gitops_path,
+			gitops_username = excluded.gitops_username,
+			gitops_token_sealed = excluded.gitops_token_sealed,
+			gitops_ca_cert = excluded.gitops_ca_cert,
 			updated_at = CURRENT_TIMESTAMP`,
 		merged.VMSSHKeys, merged.RegistryHost, merged.RegistryCACert, merged.RegistryUsername, sealed,
-		merged.OIDCProvider, merged.OIDCIssuerURL, merged.OIDCClientID, merged.OIDCUsernameClaim, merged.OIDCGroupsClaim, merged.OIDCCACert, merged.OIDCDefaultUsersGroup); err != nil {
+		merged.OIDCProvider, merged.OIDCIssuerURL, merged.OIDCClientID, merged.OIDCUsernameClaim, merged.OIDCGroupsClaim, merged.OIDCCACert, merged.OIDCDefaultUsersGroup,
+		merged.GitOpsRepoURL, merged.GitOpsBranch, merged.GitOpsPath, merged.GitOpsUsername, gitopsSealed, merged.GitOpsCACert); err != nil {
 		// Never fail the cluster launch over a convenience feature.
 		slog.Warn("saving cluster defaults", "err", err)
 	}

@@ -57,6 +57,13 @@ func defaultsStub() any {
 		OIDCGroupsClaim       string
 		OIDCCACert            string
 		OIDCDefaultUsersGroup string
+
+		GitOpsRepoURL  string
+		GitOpsBranch   string
+		GitOpsPath     string
+		GitOpsUsername string
+		GitOpsToken    string
+		GitOpsCACert   string
 	}{
 		VMSSHKeys:      "ssh-ed25519 AAAAC3Nz",
 		RegistryHost:   "registry.internal.lan:5000",
@@ -66,6 +73,9 @@ func defaultsStub() any {
 		OIDCIssuerURL:         "https://dex.internal.lan",
 		OIDCClientID:          "kubernetes",
 		OIDCDefaultUsersGroup: "k8susers",
+
+		GitOpsRepoURL: "https://gitea.internal.lan/ops/config.git",
+		GitOpsBranch:  "main",
 	}
 }
 

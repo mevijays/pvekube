@@ -223,6 +223,61 @@
               <p class="mt-1 text-xs text-slate-500">A range or CIDR outside your Node IP range above, on the same subnet — MetalLB hands these out to Services of type LoadBalancer.</p>
             </div>
           </div>
+
+          <div>
+            <label class="flex items-center gap-2 text-sm text-slate-300">
+              <input type="checkbox" name="install_gitops" value="1" id="gitops-checkbox"
+                     {{if .Defaults.GitOpsRepoURL}}checked{{end}}
+                     onchange="document.getElementById('gitops-fields').classList.toggle('hidden', !this.checked)"
+                     class="rounded border-slate-700 bg-slate-950">
+              GitOps <span class="text-slate-500">(Flux — keep the cluster in sync with a Git repo)</span>
+            </label>
+            <div id="gitops-fields" class="mt-2 {{if not .Defaults.GitOpsRepoURL}}hidden {{end}}space-y-3 pl-6">
+              <p class="text-xs text-slate-500">
+                Installs Flux and points it at your repository, so everything else this cluster should run can be committed
+                to Git instead of applied by hand. PVEKube only ever <em>reads</em> the repo — unlike <code>flux bootstrap</code>,
+                nothing is committed back into it, so read-only credentials are enough.
+              </p>
+              <div>
+                <label class="mb-1 block text-sm font-medium text-slate-300">Repository URL</label>
+                <input type="text" name="gitops_repo_url" value="{{.Defaults.GitOpsRepoURL}}"
+                       placeholder="https://gitea.mylab.lan/ops/cluster-config.git"
+                       class="w-full max-w-lg rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+                <p class="mt-1 text-xs text-slate-500">Must be a full URL (<code>https://</code> or <code>ssh://</code>). Flux rejects the short <code>git@host:repo.git</code> form.</p>
+              </div>
+              <div class="flex flex-wrap gap-3">
+                <div>
+                  <label class="mb-1 block text-sm font-medium text-slate-300">Branch <span class="text-slate-500">(default: main)</span></label>
+                  <input type="text" name="gitops_branch" value="{{.Defaults.GitOpsBranch}}" placeholder="main"
+                         class="w-44 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+                </div>
+                <div>
+                  <label class="mb-1 block text-sm font-medium text-slate-300">Path in repo <span class="text-slate-500">(default: ./)</span></label>
+                  <input type="text" name="gitops_path" value="{{.Defaults.GitOpsPath}}" placeholder="./clusters/dev"
+                         class="w-64 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+                </div>
+              </div>
+              <div class="flex flex-wrap gap-3">
+                <div>
+                  <label class="mb-1 block text-sm font-medium text-slate-300">Username <span class="text-slate-500">(private repos)</span></label>
+                  <input type="text" name="gitops_username" value="{{.Defaults.GitOpsUsername}}" autocomplete="off"
+                         class="w-56 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+                </div>
+                <div>
+                  <label class="mb-1 block text-sm font-medium text-slate-300">Token / password</label>
+                  <input type="password" name="gitops_token" value="{{.Defaults.GitOpsToken}}" autocomplete="new-password"
+                         class="w-56 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+                </div>
+              </div>
+              <p class="text-xs text-slate-500">Leave both blank for a public repo. A personal access token goes in the token field; read-only scope is sufficient.</p>
+              <div>
+                <label class="mb-1 block text-sm font-medium text-slate-300">Git host CA certificate <span class="text-slate-500">(PEM, optional)</span></label>
+                <textarea name="gitops_ca_cert" rows="3" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+                          class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-white">{{.Defaults.GitOpsCACert}}</textarea>
+                <p class="mt-1 text-xs text-slate-500">Only needed when your Git host uses an internal CA — without it Flux fails TLS verification and never syncs.</p>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
