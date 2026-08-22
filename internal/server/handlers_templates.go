@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"runtime"
 	"strconv"
@@ -389,8 +390,25 @@ func (s *Server) handleTemplatesDelete(w http.ResponseWriter, r *http.Request) {
 	cctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	if err := client.DeleteVM(cctx, node, int(vmid)); err != nil {
-		s.renderTemplatesPanel(w, r.Context(), session, conn, fmt.Sprintf("deleting VM %d on Proxmox: %s", vmid, err.Error()))
-		return
+		// A template removed directly in Proxmox leaves PVEKube's row behind,
+		// and the delete then fails with Proxmox's "Configuration file
+		// 'nodes/<node>/qemu-server/<vmid>.conf' does not exist" (an HTTP 500,
+		// not a 404 — see VMExists). Before this check the handler returned
+		// here, so the local record could never be removed through the UI at
+		// all: the row was permanently stuck with no way to clear it short of
+		// editing the database by hand.
+		//
+		// Re-checking rather than pattern-matching the error text keeps a real
+		// failure (permissions, host down, VM locked by a running task) from
+		// being silently swallowed as "already gone" — only a VM Proxmox
+		// positively reports as absent falls through to removing the record.
+		exists, existsErr := client.VMExists(cctx, node, int(vmid))
+		if existsErr != nil || exists {
+			s.renderTemplatesPanel(w, r.Context(), session, conn, fmt.Sprintf("deleting VM %d on Proxmox: %s", vmid, err.Error()))
+			return
+		}
+		slog.Info("template VM was already gone from Proxmox; removing the stale local record",
+			"vmid", vmid, "node", node, "template_id", id)
 	}
 
 	if _, err := s.db.Exec(`DELETE FROM templates WHERE id = ?`, id); err != nil {
