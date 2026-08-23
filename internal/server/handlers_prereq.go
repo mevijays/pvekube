@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"sync"
@@ -113,18 +115,45 @@ func (s *Server) handleJobStream(w http.ResponseWriter, r *http.Request) {
 
 	writeEvent(w, flusher, "connected")
 
-	// Replay persisted log lines for all job steps.
-	rows, _ := s.db.Query(`SELECT step_index, log_path FROM job_steps WHERE job_id = ? ORDER BY step_index`, jobID)
-	if rows != nil {
+	// Replay persisted step state and log lines, so reconnecting — or just
+	// reloading the page while a job runs — shows everything produced so
+	// far instead of only what arrives from this moment on.
+	//
+	// The column is "seq"; job_steps has never had a "step_index" (see the
+	// INSERT in jobs.go). This query named the wrong column, and because
+	// the error was discarded into `_`, Query returned nil rows and the
+	// whole replay block was skipped without a trace: every job's log pane
+	// came up empty and only filled in from the next live line onward,
+	// which reads exactly like "the UI isn't printing output". Keep the
+	// error checked so the next schema drift fails loudly instead.
+	rows, err := s.db.Query(`SELECT seq, status, COALESCE(log_path, '') FROM job_steps WHERE job_id = ? ORDER BY seq`, jobID)
+	if err != nil {
+		slog.Error("job stream: cannot read steps for replay", "job", jobID, "err", err)
+	} else {
 		defer rows.Close()
 		for rows.Next() {
-			var stepIdx int
-			var logPath string
-			if rows.Scan(&stepIdx, &logPath) == nil && logPath != "" {
-				lines, _ := jobs.ReadAllLines(logPath)
-				for _, line := range lines {
-					writeEvent(w, flusher, "LINE:"+line)
-				}
+			var seq int
+			var status, logPath string
+			if err := rows.Scan(&seq, &status, &logPath); err != nil {
+				slog.Error("job stream: cannot scan step row", "job", jobID, "err", err)
+				continue
+			}
+			// A pending step hasn't started and may still be skipped
+			// entirely; emitting it would render a placeholder tile for
+			// work that never runs.
+			if status != string(jobs.StatusPending) {
+				writeEvent(w, flusher, fmt.Sprintf("STEP:%d:%s", seq, status))
+			}
+			if logPath == "" {
+				continue
+			}
+			lines, err := jobs.ReadAllLines(logPath)
+			if err != nil {
+				slog.Warn("job stream: cannot read step log", "job", jobID, "path", logPath, "err", err)
+				continue
+			}
+			for _, line := range lines {
+				writeEvent(w, flusher, "LINE:"+line)
 			}
 		}
 	}

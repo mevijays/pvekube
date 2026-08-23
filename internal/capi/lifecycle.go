@@ -165,14 +165,29 @@ func logMachinePhases(c *jobs.Ctx, kubectlBin, kcPath, clusterName string) {
 // requested. This also means callers can safely add a step after this spec's
 // steps (e.g. removing a local DB record) knowing the infrastructure is
 // really gone by the time it runs.
+// deleteClusterArgs is the kubectl invocation for removing a workload
+// cluster. Split out so the --ignore-not-found guarantee is assertable
+// without a live management cluster; see its use for why it matters.
+func deleteClusterArgs(kcPath, clusterName string) []string {
+	return []string{"--kubeconfig", kcPath, "delete", "cluster", clusterName,
+		"--wait=false", "--ignore-not-found=true"}
+}
+
 func DeleteClusterSpec(dataDir, binDir, clusterName string) *jobs.Spec {
 	return jobs.NewSpec("cluster.delete", "Delete cluster "+clusterName).
 		Step("kubectl delete cluster", func(c *jobs.Ctx) error {
 			kubectlBin := filepath.Join(binDir, "kubectl")
 			kcPath := bootstrap.KubeconfigPath(dataDir)
 			c.Logf("Sending delete request for cluster %q (CAPI will cascade to all machines/VMs)", clusterName)
-			return runner.Run(c, c, "", nil, kubectlBin, "--kubeconfig", kcPath,
-				"delete", "cluster", clusterName, "--wait=false")
+			// --ignore-not-found so a cluster already gone from the management
+			// cluster is not an error. Without it kubectl exits non-zero on
+			// NotFound, this step fails, and the job engine SKIPS every later
+			// step — including "Remove local record". PVEKube's row for a
+			// cluster deleted out-of-band (or half-deleted by an earlier run)
+			// therefore became permanently stuck, with no route to clear it
+			// through the UI at all. Hit twice for real; both times the row
+			// had to be removed by editing the database by hand.
+			return runner.Run(c, c, "", nil, kubectlBin, deleteClusterArgs(kcPath, clusterName)...)
 		}).
 		Step("Wait for teardown to finish", func(c *jobs.Ctx) error {
 			kubectlBin := filepath.Join(binDir, "kubectl")

@@ -29,6 +29,15 @@ type Server struct {
 
 	mu         sync.Mutex
 	csrfBySess map[string]string // session token -> csrf token, so a leaked GET can't be used to forge POSTs
+
+	// buildMu serialises the check-then-start of a template build.
+	// templateBuildInProgress is a database query, so on its own it is a
+	// time-of-check/time-of-use race: two submissions can both read "not
+	// busy" before either inserts its job row, and concurrent builds then
+	// share one image-builder checkout and one packer.json. Deliberately
+	// separate from mu, which only guards csrfBySess and must not be held
+	// across the slow calls (NextVMID, version resolution) this covers.
+	buildMu    sync.Mutex
 	lastChecks []prereq.Result
 }
 

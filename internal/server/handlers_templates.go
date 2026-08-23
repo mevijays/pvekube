@@ -73,14 +73,37 @@ func (s *Server) renderTemplatesPanel(w http.ResponseWriter, ctx context.Context
 		s.cacheDiscovery(conn.ID, snap)
 	}
 
-	rows, err := s.db.Query(`SELECT id, os_flavor, k8s_version, node, vmid, created_at FROM templates WHERE connection_id = ? ORDER BY id DESC`, conn.ID)
+	rows, dbErr := s.db.Query(`SELECT id, os_flavor, k8s_version, node, vmid, created_at FROM templates WHERE connection_id = ? ORDER BY id DESC`, conn.ID)
 	var built []builtTemplateView
-	if err == nil {
+	if dbErr == nil {
 		defer rows.Close()
+		var scanErr error
 		for rows.Next() {
 			var t builtTemplateView
-			rows.Scan(&t.ID, &t.OSFlavor, &t.K8sVersion, &t.Node, &t.VMID, &t.CreatedAt)
+			if scanErr = rows.Scan(&t.ID, &t.OSFlavor, &t.K8sVersion, &t.Node, &t.VMID, &t.CreatedAt); scanErr != nil {
+				// stop collecting and surface an error to the panel render below
+				break
+			}
 			built = append(built, t)
+		}
+		if scanErr == nil {
+			scanErr = rows.Err()
+		}
+		if scanErr != nil {
+			// attach DB error text to the panel's error message so the operator
+			// sees what went wrong instead of silently losing rows
+			if errMsg != "" {
+				errMsg = errMsg + "; " + "reading templates: " + scanErr.Error()
+			} else {
+				errMsg = "reading templates: " + scanErr.Error()
+			}
+		}
+	} else {
+		// Query-level error
+		if errMsg != "" {
+			errMsg = errMsg + "; " + "reading templates: " + dbErr.Error()
+		} else {
+			errMsg = "reading templates: " + dbErr.Error()
 		}
 	}
 
@@ -121,6 +144,26 @@ func (s *Server) renderTemplatesPanel(w http.ResponseWriter, ctx context.Context
 // second build "at the same time," so it's fixed alongside this work rather
 // than left as a latent trap. DB-backed rather than an in-process mutex so
 // it survives a restart mid-build correctly reflecting real job state.
+// clustersUsingTemplate names the clusters whose rows still reference a
+// template, so deletion can be refused with something actionable rather than
+// surfacing a raw foreign-key error after the image is already destroyed.
+func (s *Server) clustersUsingTemplate(templateID int64) ([]string, error) {
+	rows, err := s.db.Query(`SELECT name FROM clusters WHERE template_id = ?`, templateID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		names = append(names, n)
+	}
+	return names, rows.Err()
+}
+
 func (s *Server) templateBuildInProgress() (bool, error) {
 	var n int
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM jobs WHERE kind = 'template.build' AND status IN ('pending', 'running')`).Scan(&n)
@@ -269,6 +312,11 @@ func (s *Server) handleTemplatesBuild(w http.ResponseWriter, r *http.Request) {
 	// the first — see templateBuildInProgress's doc comment. Checked before
 	// parsing/validating the rest of the form so the operator finds out
 	// immediately, not after a VMID has already been allocated.
+	// Held until the job row exists, so the busy check below cannot be
+	// overtaken by a second submission that read the same "not busy".
+	s.buildMu.Lock()
+	defer s.buildMu.Unlock()
+
 	if busy, _ := s.templateBuildInProgress(); busy {
 		s.renderTemplatesPanel(w, r.Context(), session, conn, "a template build is already in progress — wait for it to finish before starting another")
 		return
@@ -384,6 +432,25 @@ func (s *Server) handleTemplatesDelete(w http.ResponseWriter, r *http.Request) {
 	client, err := s.proxmoxClientFor(conn)
 	if err != nil {
 		s.renderTemplatesPanel(w, r.Context(), session, conn, err.Error())
+		return
+	}
+
+	// Refused BEFORE anything is destroyed, because deleting the Proxmox VM
+	// is irreversible and the database check that would have stopped it comes
+	// after. clusters.template_id references templates(id) with no ON DELETE
+	// clause, so removing a template a cluster still uses fails on the
+	// foreign key — but only after the image is already gone. The old
+	// ordering therefore produced the worst of both: the template image
+	// destroyed on Proxmox (so the cluster can no longer scale or upgrade)
+	// AND the row still present, reported as "VM deleted on Proxmox, but
+	// removing the local record failed".
+	if users, err := s.clustersUsingTemplate(id); err != nil {
+		s.renderTemplatesPanel(w, r.Context(), session, conn, "checking whether any cluster uses this template: "+err.Error())
+		return
+	} else if len(users) > 0 {
+		s.renderTemplatesPanel(w, r.Context(), session, conn, fmt.Sprintf(
+			"this template is still used by %s — deleting it would leave that cluster unable to scale or upgrade. Delete the cluster first.",
+			strings.Join(users, ", ")))
 		return
 	}
 

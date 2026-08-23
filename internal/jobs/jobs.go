@@ -163,8 +163,17 @@ func (e *Engine) run(ctx context.Context, jobID int64, spec *Spec) {
 	var stepIDs []int64
 	for rows.Next() {
 		var id int64
-		rows.Scan(&id)
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			e.failJob(jobID, err)
+			return
+		}
 		stepIDs = append(stepIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		e.failJob(jobID, err)
+		return
 	}
 	rows.Close()
 
@@ -206,8 +215,20 @@ func (e *Engine) run(ctx context.Context, jobID int64, spec *Spec) {
 		if err != nil {
 			e.db.Exec(`UPDATE job_steps SET status = ?, ended_at = CURRENT_TIMESTAMP WHERE id = ?`, StatusFailed, stepID)
 			e.publish(jobID, fmt.Sprintf("STEP:%d:failed", i))
-			finalStatus = StatusFailed
-			jobErr = err
+			// A step whose process was killed by a cancel reports an error
+			// like any other, so the cause has to be read from the context
+			// rather than the error. Checking it HERE and not only at the top
+			// of the loop matters for the last step: with no further
+			// iteration to reach that check, cancelling it would otherwise be
+			// recorded as an outright failure, which reads to the operator as
+			// "the job broke" rather than "I stopped it".
+			if ctx.Err() != nil {
+				finalStatus = StatusCancelled
+				jobErr = fmt.Errorf("cancelled")
+			} else {
+				finalStatus = StatusFailed
+				jobErr = err
+			}
 			continue
 		}
 		e.db.Exec(`UPDATE job_steps SET status = ?, ended_at = CURRENT_TIMESTAMP WHERE id = ?`, StatusSucceeded, stepID)

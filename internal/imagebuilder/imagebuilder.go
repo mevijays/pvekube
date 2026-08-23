@@ -12,6 +12,7 @@
 package imagebuilder
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -319,24 +320,192 @@ func chmodRecursive(path string, mode os.FileMode) {
 	})
 }
 
-// ensurePackerJSON copies packer.json.tmpl -> packer.json on the HOST side
+// rebootWaitMarker identifies the provisioner PVEKube injects below, so
+// re-rendering packer.json is idempotent rather than stacking duplicates.
+const rebootWaitMarker = "pvekube: waiting for the machine to come back after reboot"
+
+// ensurePackerJSON renders packer.json.tmpl -> packer.json on the HOST side
 // of the bind mount (not inside the container, which has no shell to run a
 // copy in — see dockerRunArgs). As of the pinned image-builder ref the repo
 // ships the Packer template with a .tmpl suffix but the Makefile references
 // it without one; Packer's legacy JSON template syntax ({{user `x`}} /
-// {{env `X`}}) needs no separate rendering step, so a plain copy suffices.
-func ensurePackerJSON(dataDir string) error {
+// {{env `X`}}) needs no separate rendering step, so a copy plus the patch
+// below suffices.
+//
+// Rendered every build rather than only when absent: the patch has to reach
+// installs whose packer.json predates it, and re-rendering also keeps the
+// file in step with packer.json.tmpl after an image-builder version bump.
+// Nothing hand-edits packer.json — PVEKube generates it — so there is
+// nothing to preserve by skipping.
+func ensurePackerJSON(dataDir string) (patched bool, err error) {
 	dir := filepath.Join(RepoDir(dataDir), "images", "capi", "packer", "proxmox")
-	dst := filepath.Join(dir, "packer.json")
-	if _, err := os.Stat(dst); err == nil {
-		return nil
-	}
 	src := filepath.Join(dir, "packer.json.tmpl")
 	b, err := os.ReadFile(src)
 	if err != nil {
-		return fmt.Errorf("reading %s: %w", src, err)
+		return false, fmt.Errorf("reading %s: %w", src, err)
 	}
-	return os.WriteFile(dst, b, 0o644)
+	out, patched, err := patchRebootWait(b)
+	if err != nil {
+		return false, err
+	}
+	if patched {
+		// The TEMPLATE is patched, not the rendered packer.json, because the
+		// rendered file does not survive: image-builder's
+		// hack/set-ssh-password.sh runs as a Make dependency of every proxmox
+		// build and validate target and does `rm packer.json` followed by a
+		// sed of packer.json.tmpl into its place, to substitute the SSH
+		// password. Anything written to packer.json is therefore deleted
+		// before Packer ever reads it. Confirmed live rather than reasoned
+		// about: PVEKube logged its patch at 16:28:30 and the file was back
+		// to the unpatched 7-provisioner version, owned by the container's
+		// UID, at 16:29 — and the build then hit the very race the patch
+		// exists to prevent.
+		//
+		// The substitution only touches $SSH_PASSWORD/$ENCRYPTED_SSH_PASSWORD,
+		// neither of which appears in the injected provisioner, so patching
+		// the template upstream of it is safe.
+		if err := writeFileAtomic(src, out); err != nil {
+			return false, err
+		}
+	}
+	// Still written so the rendered file matches the template for anything
+	// that reads it before set-ssh-password.sh regenerates it.
+	return patched, writeFileAtomic(filepath.Join(dir, "packer.json"), out)
+}
+
+// writePackerJSON replaces packer.json atomically, via a temp file in the
+// same directory plus a rename.
+//
+// A plain os.WriteFile is not enough here and fails outright: the existing
+// packer.json can be owned by the build container's UID (1001, the
+// "imagebuilder" user) rather than by the user PVEKube runs as, so opening
+// it for writing returns permission denied. This only surfaced once the
+// render stopped being skipped when the file already existed. Rename needs
+// write permission on the DIRECTORY — which PVEKube has, dockerRunArgs
+// makes it world-writable — not on the file being replaced, so it works
+// whoever owns the old copy. It is also atomic, so a build can never read a
+// half-written template.
+func writeFileAtomic(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, ".pvekube-tmp-*")
+	if err != nil {
+		return fmt.Errorf("creating temp file in %s: %w", dir, err)
+	}
+	tmp := f.Name()
+	// Harmless once the rename below succeeds (the path no longer exists);
+	// cleans up the temp file on every failure path before that.
+	defer os.Remove(tmp)
+
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return fmt.Errorf("writing temp packer.json: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("closing temp packer.json: %w", err)
+	}
+	// CreateTemp makes the file 0600; the container reads it as another UID.
+	if err := os.Chmod(tmp, 0o644); err != nil {
+		return fmt.Errorf("chmod temp packer.json: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("replacing %s: %w", path, err)
+	}
+	return nil
+}
+
+// patchRebootWait inserts a shell provisioner between image-builder's
+// "sudo reboot now" and the Ansible run that follows it.
+//
+// Upstream allows a fixed 10s for the guest to reboot and then goes straight
+// into the node.yml Ansible provisioner. That is a race, and on a loaded
+// host it is lost: observed on 2 of 9 real builds, each ending in
+// "ssh: handshake failed: EOF" and then hanging until PVEKube's own build
+// timeout killed it ~90 minutes later.
+//
+// The reason the pause is not simply too short is worth stating, because it
+// dictates the shape of the fix: a SHELL provisioner reconnects through
+// Packer's communicator, which retries the SSH handshake (bounded by the
+// builder's ssh_timeout, 2h here). The ANSIBLE provisioner does not — it
+// starts a local proxy adapter and Ansible connects to that exactly once, so
+// a guest that is still booting yields an unretried EOF. Inserting a shell
+// step converts "hope 10s was enough" into "block until the machine is
+// genuinely reachable again", and only then hand over to Ansible.
+//
+// Deliberately conservative about upstream drift: if the provisioner list or
+// the node.yml entry is not shaped as expected, the file is passed through
+// untouched rather than guessed at. Each provisioner is carried as
+// json.RawMessage so every entry PVEKube does not touch keeps its original
+// bytes.
+func patchRebootWait(raw []byte) (out []byte, patched bool, err error) {
+	if bytes.Contains(raw, []byte(rebootWaitMarker)) {
+		return raw, false, nil
+	}
+
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, false, fmt.Errorf("parsing packer.json.tmpl: %w", err)
+	}
+	rawProvs, ok := doc["provisioners"]
+	if !ok {
+		return raw, false, nil
+	}
+	var provs []json.RawMessage
+	if err := json.Unmarshal(rawProvs, &provs); err != nil {
+		return raw, false, nil
+	}
+
+	idx := -1
+	for i, p := range provs {
+		var probe struct {
+			Type         string `json:"type"`
+			PlaybookFile string `json:"playbook_file"`
+		}
+		if json.Unmarshal(p, &probe) != nil {
+			continue
+		}
+		if probe.Type == "ansible" && strings.HasSuffix(probe.PlaybookFile, "node.yml") {
+			idx = i
+			break
+		}
+	}
+	if idx <= 0 {
+		// Not found, or first in the list (so nothing reboots before it) —
+		// either way there is no race here to fix.
+		return raw, false, nil
+	}
+
+	// pause_before covers the gap between issuing the reboot and the guest
+	// actually dropping the connection; without it Packer can reconnect to
+	// the still-alive pre-reboot session and then lose it mid-command.
+	// Everything after that is handled by the communicator's own retries.
+	wait, err := json.Marshal(map[string]any{
+		"type":         "shell",
+		"pause_before": "30s",
+		"inline": []string{
+			"echo '" + rebootWaitMarker + "'",
+			"sudo systemctl is-system-running --wait >/dev/null 2>&1 || true",
+			"echo 'pvekube: machine is back, handing over to Ansible'",
+		},
+	})
+	if err != nil {
+		return nil, false, err
+	}
+
+	merged := make([]json.RawMessage, 0, len(provs)+1)
+	merged = append(merged, provs[:idx]...)
+	merged = append(merged, wait)
+	merged = append(merged, provs[idx:]...)
+
+	newProvs, err := json.Marshal(merged)
+	if err != nil {
+		return nil, false, err
+	}
+	doc["provisioners"] = newProvs
+	out, err = json.MarshalIndent(doc, "", "  ")
+	if err != nil {
+		return nil, false, err
+	}
+	return out, true, nil
 }
 
 // ValidateSpec runs `make validate-proxmox-<flavor>` — a fast (seconds),
@@ -346,7 +515,16 @@ func ValidateSpec(dataDir string, flavor OSFlavor, env ConnEnv, kv KubernetesVer
 	var isoFile string
 	return jobs.NewSpec("template.validate", "Validate "+flavor.Label+" template config").
 		Step("Ensure image-builder checkout", EnsureRepoStep(dataDir)).
-		Step("Render packer.json", func(c *jobs.Ctx) error { return ensurePackerJSON(dataDir) }).
+		Step("Render packer.json", func(c *jobs.Ctx) error {
+			patched, err := ensurePackerJSON(dataDir)
+			if err != nil {
+				return err
+			}
+			if patched {
+				c.Logf("Added a post-reboot wait before the Ansible run — see patchRebootWait for why upstream's fixed 10s is a race")
+			}
+			return nil
+		}).
 		Step("Stage installer ISO on Proxmox", EnsureISOStagedStep(dataDir, flavor, env, &isoFile)).
 		Step("packer validate", func(c *jobs.Ctx) error {
 			extraEnv := append(packerFlagsEnv(env, 0, kv), isoFileEnv(isoFile)...)
@@ -359,6 +537,11 @@ func ValidateSpec(dataDir string, flavor OSFlavor, env ConnEnv, kv KubernetesVer
 // legitimately spend 35+ minutes here — but finite, because the failure mode
 // it exists for produces no output at all and would otherwise wait forever.
 const BuildTimeout = 90 * time.Minute
+
+// buildVMMemoryMiB is what the throwaway Packer build VM gets, overriding
+// image-builder's 2048 default. See packerFlagsEnv for the crash this
+// addresses.
+const buildVMMemoryMiB = 4096
 
 // BuildSpec runs the real build. vmid is pre-allocated by the caller via
 // the Proxmox client (rather than left to Packer's default of "next free
@@ -373,7 +556,16 @@ func BuildSpec(dataDir string, flavor OSFlavor, kv KubernetesVersion, vmid int, 
 	}
 	return jobs.NewSpec("template.build", title).
 		Step("Ensure image-builder checkout", EnsureRepoStep(dataDir)).
-		Step("Render packer.json", func(c *jobs.Ctx) error { return ensurePackerJSON(dataDir) }).
+		Step("Render packer.json", func(c *jobs.Ctx) error {
+			patched, err := ensurePackerJSON(dataDir)
+			if err != nil {
+				return err
+			}
+			if patched {
+				c.Logf("Added a post-reboot wait before the Ansible run — see patchRebootWait for why upstream's fixed 10s is a race")
+			}
+			return nil
+		}).
 		Step("Stage installer ISO on Proxmox", EnsureISOStagedStep(dataDir, flavor, env, &isoFile)).
 		Step("packer validate (pre-flight)", func(c *jobs.Ctx) error {
 			extraEnv := append(packerFlagsEnv(env, 0, kv), isoFileEnv(isoFile)...)
@@ -390,6 +582,14 @@ func BuildSpec(dataDir string, flavor OSFlavor, kv KubernetesVersion, vmid int, 
 			extraEnv := append(packerFlagsEnv(env, vmid, kv), isoFileEnv(isoFile)...)
 			args := dockerRunArgs(dataDir, env, extraEnv, "build-proxmox-"+flavor.ID, container)
 
+			// A container orphaned by an earlier run blocks this one outright
+			// ("container name is already in use"), and that is reachable in
+			// normal use: VMIDs are recycled once a template is deleted, so a
+			// new build readily lands on the same name. Removing it first
+			// makes the build self-healing rather than requiring a manual
+			// `docker rm` before every retry.
+			reapContainer(c, container, "left over from an earlier build")
+
 			// Bounded so a wedged Packer fails instead of hanging forever.
 			// This is not hypothetical: image-builder's own packer.json
 			// reboots the guest and then allows a fixed 10s before running
@@ -401,10 +601,22 @@ func BuildSpec(dataDir string, flavor OSFlavor, kv KubernetesVersion, vmid int, 
 			// live: a build sat wedged with flat CPU until killed by hand,
 			// and because templateBuildInProgress (handlers_templates.go)
 			// treats a running build as a global lock, it blocked every
-			// subsequent build on every connection too.
+			// subsequent build on every connection too. patchRebootWait
+			// addresses the underlying race; this bounds what happens when
+			// something else wedges.
 			ctx, cancel := context.WithTimeout(c, BuildTimeout)
 			defer cancel()
 			err := runner.Run(ctx, c, "", nil, "docker", args...)
+
+			// Reaped on ANY early exit, not just the timeout: an operator
+			// pressing Cancel cancels this context too, and runner.Run then
+			// kills the local `docker run` client — which detaches from the
+			// container rather than stopping it. Handling only the timeout
+			// left a cancelled build's Packer running indefinitely, still
+			// holding its build VM, with its name blocking the next attempt.
+			if ctx.Err() != nil {
+				reapContainer(c, container, "the build was interrupted")
+			}
 
 			if ctx.Err() == context.DeadlineExceeded {
 				// By this point runner.Run has already tried the graceful
@@ -418,9 +630,7 @@ func BuildSpec(dataDir string, flavor OSFlavor, kv KubernetesVersion, vmid int, 
 				// run` client detaches rather than stopping the container,
 				// which would otherwise keep running (and keep holding the
 				// build VM) after the job has already failed.
-				c.Logf("Build exceeded %s — ensuring container %s is stopped", BuildTimeout, container)
-				rm := exec.Command("docker", "rm", "-f", container)
-				rm.CombinedOutput() // best-effort; a "no such container" failure here just means Packer's own graceful cleanup (above) already removed it
+				c.Logf("Build exceeded %s", BuildTimeout)
 
 				// The container's fate says nothing definitive about the
 				// Proxmox VM it created — Packer may have gotten far enough
@@ -433,6 +643,24 @@ func BuildSpec(dataDir string, flavor OSFlavor, kv KubernetesVersion, vmid int, 
 			}
 			return err
 		})
+}
+
+// reapContainer force-removes a build container, best effort.
+//
+// Deliberately not tied to the job's context: by the time this matters that
+// context is already cancelled, and a cleanup that cancels itself is no
+// cleanup at all. A "no such container" failure is the normal case and not
+// worth reporting — it just means there was nothing to remove, or Packer's
+// own graceful shutdown got there first.
+func reapContainer(c *jobs.Ctx, name, why string) {
+	out, err := exec.Command("docker", "rm", "-f", name).CombinedOutput()
+	if err != nil {
+		if !strings.Contains(string(out), "No such container") {
+			c.Logf("Could not remove container %s (%s): %v — %s", name, why, err, strings.TrimSpace(string(out)))
+		}
+		return
+	}
+	c.Logf("Removed container %s (%s)", name, why)
 }
 
 // reportBuildTimeout checks Proxmox directly for whether the build VM
@@ -488,6 +716,21 @@ func packerFlagsEnv(env ConnEnv, vmid int, kv KubernetesVersion) []string {
 	// present there (part of Ubuntu Server's stock package set), so it's deliberately
 	// not duplicated here. Debian-only; harmless no-op on RPM/Flatcar flavors.
 	flags += ` --var extra_debs="nfs-common"`
+	// image-builder defaults the BUILD VM to 2048 MiB, which is marginal for
+	// Ubuntu's live-server installer: it runs entirely from RAM (casper +
+	// overlayfs) and rsyncs the squashfs through that overlay. Observed on a
+	// real build's console, the guest kernel oopsed mid-extraction inside
+	// ovl_iterate_merged with rsync as the faulting task and a backtrace full
+	// of allocation/reclaim frames (__alloc_frozen_pages_noprof,
+	// handle_mm_fault, count_memcg_events) — the signature of memory
+	// pressure rather than a clean OOM kill. It also matches the failure
+	// being intermittent (4 of 10 builds succeeded across both Proxmox
+	// hosts) rather than deterministic, which is what a marginal resource
+	// produces and a hard incompatibility does not.
+	//
+	// This is the build VM only — it is discarded when the template is
+	// converted, and has no bearing on the memory a cluster node gets.
+	flags += fmt.Sprintf(" --var memory=%d", buildVMMemoryMiB)
 	// Empty unless an explicit version was requested, so a default build
 	// still runs on image-builder's own pinned versions exactly as before.
 	flags += kv.packerVars()

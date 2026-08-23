@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -303,7 +304,15 @@ func (s *Server) handleProxmoxDisconnect(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "bad connection id", http.StatusBadRequest)
 		return
 	}
-	s.db.Exec(`DELETE FROM proxmox_connections WHERE id = ?`, id)
+	// Checked rather than ignored: this cascades to the connection's
+	// templates and clusters, so silently swallowing a failure would tell
+	// the operator their host was disconnected while it and everything it
+	// tracked are still there.
+	if _, err := s.db.Exec(`DELETE FROM proxmox_connections WHERE id = ?`, id); err != nil {
+		slog.Warn("disconnecting proxmox connection", "id", id, "err", err)
+		http.Error(w, "could not disconnect this Proxmox host: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
 	s.handleProxmoxList(w, r)
 }
 

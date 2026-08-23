@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/pem"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -128,15 +129,28 @@ func (s *Server) handleClustersList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := s.db.Query(`SELECT name, status, created_at FROM clusters WHERE connection_id = ? ORDER BY id DESC`, conn.ID)
+	rows, dbErr := s.db.Query(`SELECT name, status, created_at FROM clusters WHERE connection_id = ? ORDER BY id DESC`, conn.ID)
 	var names []clusterListView
-	if err == nil {
+	if dbErr == nil {
 		defer rows.Close()
 		for rows.Next() {
 			var c clusterListView
-			rows.Scan(&c.Name, &c.Status, &c.CreatedAt)
+			if err := rows.Scan(&c.Name, &c.Status, &c.CreatedAt); err != nil {
+				rows.Close()
+				ui.RenderPartial(w, "clusters_list", map[string]any{"Clusters": nil})
+				return
+			}
 			names = append(names, c)
 		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			ui.RenderPartial(w, "clusters_list", map[string]any{"Clusters": nil})
+			return
+		}
+	} else {
+		// Query-level failure: show empty list
+		ui.RenderPartial(w, "clusters_list", map[string]any{"Clusters": nil})
+		return
 	}
 
 	// Refresh each cluster's phase concurrently — a handful of `kubectl get`
@@ -165,16 +179,23 @@ func (s *Server) handleClustersList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listTemplates(connID int64) []templateOptionView {
-	rows, err := s.db.Query(`SELECT id, os_flavor, k8s_version, node, vmid FROM templates WHERE connection_id = ? ORDER BY id DESC`, connID)
-	if err != nil {
+	rows, dbErr := s.db.Query(`SELECT id, os_flavor, k8s_version, node, vmid FROM templates WHERE connection_id = ? ORDER BY id DESC`, connID)
+	if dbErr != nil {
 		return nil
 	}
 	defer rows.Close()
 	var out []templateOptionView
 	for rows.Next() {
 		var t templateOptionView
-		rows.Scan(&t.ID, &t.OSFlavor, &t.K8sVersion, &t.Node, &t.VMID)
+		if err := rows.Scan(&t.ID, &t.OSFlavor, &t.K8sVersion, &t.Node, &t.VMID); err != nil {
+			// Stop on scan error and return what we have so caller doesn't get
+			// silently corrupted rows.
+			return nil
+		}
 		out = append(out, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil
 	}
 	return out
 }
@@ -628,6 +649,25 @@ func (s *Server) handleClustersApply(w http.ResponseWriter, r *http.Request) {
 	}, yaml, cni, addons, registry, oidcDefaults)
 	jobID, err := s.jobs.Start(spec, `{"cluster":"`+name+`"}`)
 	if err != nil {
+		// The row above is inserted first on purpose — clusters.name is
+		// UNIQUE, so it is what rejects a duplicate name before any real work
+		// happens. But leaving it behind when the job never starts strands it
+		// at status 'provisioning' forever, and because of that same UNIQUE
+		// constraint the operator can then never retry under the same name:
+		// the next attempt fails with a bare "UNIQUE constraint failed".
+		// Attempt a robust cleanup with a few retries to reduce the chance of
+		// the row being left behind due to transient DB contention.
+		const maxDelAttempts = 3
+		for i := 0; i < maxDelAttempts; i++ {
+			if _, delErr := s.db.Exec(`DELETE FROM clusters WHERE name = ?`, name); delErr == nil {
+				break
+			} else if i == maxDelAttempts-1 {
+				slog.Warn("could not remove the cluster row after the job failed to start", "cluster", name, "err", delErr)
+			} else {
+				// brief backoff
+				time.Sleep(100 * time.Millisecond)
+			}
+		}
 		s.renderClustersPanel(w, r.Context(), session, conn, "starting job: "+err.Error())
 		return
 	}
