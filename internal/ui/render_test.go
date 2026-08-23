@@ -320,6 +320,11 @@ func TestPartialsRenderWithHandlerData(t *testing.T) {
 			data: map[string]any{
 				"ClusterName": "demo", "TemplateID": int64(1), "YAML": "apiVersion: v1",
 				"CSRF": "csrf-token-here", "CNI": "calico",
+				"ControlPlaneCount": 3, "WorkerCount": 2, "Bridge": "vmbr0",
+				"NumSockets": 1, "NumCores": 4, "MemoryMiB": 8192, "BootVolumeSize": 100,
+				"Gateway": "10.0.0.1", "IPPrefix": 24, "ControlPlaneEndpoint": "10.0.0.10",
+				"NodeIPRange": "10.0.0.20-10.0.0.30", "DNSServers": "10.0.0.1, 1.1.1.1",
+				"AllowedNodes":         []string{"pve-a", "pve-b"},
 				"InstallMetricsServer": true, "InstallIstio": false,
 				"InstallMetalLB": true, "MetalLBIPPool": "10.0.0.1-10.0.0.9",
 				"RegistryHost": "registry.internal.lan:5000", "RegistryCACert": "PEM",
@@ -331,7 +336,11 @@ func TestPartialsRenderWithHandlerData(t *testing.T) {
 			// The apply form must carry the SAME connection the manifest was
 			// generated against — see formConnection's doc comment
 			// (handlers_clusters.go) for the race this prevents.
-			mustContain: []string{"csrf-token-here", "registry.internal.lan:5000", `name="conn" value="5"`},
+			mustContain: []string{
+				"csrf-token-here", "registry.internal.lan:5000", `name="conn" value="5"`,
+				`name="gateway" value="10.0.0.1"`, `name="control_plane_endpoint_ip" value="10.0.0.10"`,
+				`name="node_ip_range" value="10.0.0.20-10.0.0.30"`, `name="allowed_nodes" value="pve-a"`,
+			},
 		},
 		{
 			name:        "cluster_preview/error",

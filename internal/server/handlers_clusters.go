@@ -442,6 +442,19 @@ func (f clusterForm) ipPlan() ipplan.Plan {
 	}
 }
 
+func blockingIPPlanError(issues []ipplan.Issue) error {
+	var messages []string
+	for _, issue := range issues {
+		if issue.Severity == ipplan.SeverityError {
+			messages = append(messages, issue.Field+": "+issue.Message)
+		}
+	}
+	if len(messages) == 0 {
+		return nil
+	}
+	return errBadInput("IP plan is invalid: " + strings.Join(messages, "; "))
+}
+
 func (s *Server) handleClustersCheckIP(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	conn, err := s.formConnection(r)
@@ -468,6 +481,10 @@ func (s *Server) handleClustersPreview(w http.ResponseWriter, r *http.Request) {
 	}
 	f, err := s.parseClusterForm(r, conn.ID)
 	if err != nil {
+		ui.RenderPartial(w, "cluster_preview", map[string]any{"Error": err.Error()})
+		return
+	}
+	if err := blockingIPPlanError(ipplan.Validate(f.ipPlan())); err != nil {
 		ui.RenderPartial(w, "cluster_preview", map[string]any{"Error": err.Error()})
 		return
 	}
@@ -509,6 +526,11 @@ func (s *Server) handleClustersPreview(w http.ResponseWriter, r *http.Request) {
 
 	ui.RenderPartial(w, "cluster_preview", map[string]any{
 		"ClusterName": f.name, "TemplateID": f.templateID, "YAML": yaml, "CSRF": s.csrfFor(session), "CNI": string(f.cni),
+		"ControlPlaneCount": f.controlPlaneCount, "WorkerCount": f.workerCount,
+		"Bridge": f.bridge, "NumSockets": f.numSockets, "NumCores": f.numCores,
+		"MemoryMiB": f.memoryMiB, "BootVolumeSize": f.bootVolumeSize,
+		"Gateway": f.gateway, "IPPrefix": f.ipPrefix, "ControlPlaneEndpoint": f.controlPlaneEndpoint,
+		"NodeIPRange": f.nodeIPRange, "DNSServers": strings.Join(f.dnsServers, ", "), "AllowedNodes": f.allowedNodes,
 		"InstallMetricsServer": f.addons.MetricsServer, "InstallIstio": f.addons.Istio,
 		"InstallMetalLB": f.addons.MetalLB, "MetalLBIPPool": f.addons.MetalLBIPPool,
 		"InstallGitOps": f.addons.GitOps,
@@ -550,9 +572,18 @@ func (s *Server) handleClustersApply(w http.ResponseWriter, r *http.Request) {
 		ui.RenderPartial(w, "clusters_not_connected", nil)
 		return
 	}
-	name := r.FormValue("name")
+	f, err := s.parseClusterForm(r, conn.ID)
+	if err != nil {
+		s.renderClustersPanel(w, r.Context(), session, conn, err.Error())
+		return
+	}
+	if err := blockingIPPlanError(ipplan.Validate(f.ipPlan())); err != nil {
+		s.renderClustersPanel(w, r.Context(), session, conn, err.Error())
+		return
+	}
+
+	name := f.name
 	yaml := r.FormValue("manifest_yaml")
-	templateID, _ := strconv.ParseInt(r.FormValue("template_id"), 10, 64)
 	if name == "" || yaml == "" {
 		s.renderClustersPanel(w, r.Context(), session, conn, "missing cluster name or manifest — preview again")
 		return
@@ -566,26 +597,12 @@ func (s *Server) handleClustersApply(w http.ResponseWriter, r *http.Request) {
 	s.redactor.Track(secret)
 
 	if _, err := s.db.Exec(`INSERT INTO clusters (name, connection_id, template_id, manifest_yaml, status) VALUES (?, ?, ?, ?, 'provisioning')`,
-		name, conn.ID, templateID, yaml); err != nil {
+		name, conn.ID, f.templateID, yaml); err != nil {
 		s.renderClustersPanel(w, r.Context(), session, conn, "recording cluster: "+err.Error())
 		return
 	}
 
-	cni := capi.CNIFlavor(r.FormValue("cni"))
-	addons := capi.AddonSelection{
-		MetricsServer: r.FormValue("install_metrics_server") == "1",
-		Istio:         r.FormValue("install_istio") == "1",
-		MetalLB:       r.FormValue("install_metallb") == "1",
-		MetalLBIPPool: strings.TrimSpace(r.FormValue("metallb_ip_pool")),
-
-		GitOps:         r.FormValue("install_gitops") == "1",
-		GitOpsRepoURL:  strings.TrimSpace(r.FormValue("gitops_repo_url")),
-		GitOpsBranch:   strings.TrimSpace(r.FormValue("gitops_branch")),
-		GitOpsPath:     strings.TrimSpace(r.FormValue("gitops_path")),
-		GitOpsUsername: strings.TrimSpace(r.FormValue("gitops_username")),
-		GitOpsToken:    strings.TrimSpace(r.FormValue("gitops_token")),
-		GitOpsCACert:   strings.TrimSpace(r.FormValue("gitops_ca_cert")),
-	}
+	addons := f.addons
 	// Same treatment as the registry password: keep the Git token out of the
 	// job log, the rendered manifest, and anything else the redactor covers.
 	if addons.GitOpsToken != "" {
@@ -594,12 +611,7 @@ func (s *Server) handleClustersApply(w http.ResponseWriter, r *http.Request) {
 	// The manifest already carries the CA/containerd config from preview
 	// time; only the credentials are still needed here, to build the
 	// in-cluster pull Secret.
-	registry := capi.RegistryConfig{
-		Host:      capi.NormalizeRegistryHost(r.FormValue("registry_host")),
-		CACertPEM: strings.TrimSpace(r.FormValue("registry_ca_cert")),
-		Username:  strings.TrimSpace(r.FormValue("registry_username")),
-		Password:  r.FormValue("registry_password"),
-	}
+	registry := f.registry
 	if registry.Password != "" {
 		s.redactor.Track(registry.Password)
 	}
@@ -609,21 +621,13 @@ func (s *Server) handleClustersApply(w http.ResponseWriter, r *http.Request) {
 	// acted on here, since RBAC isn't part of the manifest at all (it's a
 	// post-provision step, needs a reachable API server — see
 	// InstallOIDCDefaultGroupRBACStep).
-	oidcDefaults := capi.OIDCConfig{
-		Provider:          r.FormValue("oidc_provider"),
-		IssuerURL:         strings.TrimSpace(r.FormValue("oidc_issuer_url")),
-		ClientID:          strings.TrimSpace(r.FormValue("oidc_client_id")),
-		UsernameClaim:     strings.TrimSpace(r.FormValue("oidc_username_claim")),
-		GroupsClaim:       strings.TrimSpace(r.FormValue("oidc_groups_claim")),
-		CACertPEM:         strings.TrimSpace(r.FormValue("oidc_ca_cert")),
-		DefaultUsersGroup: strings.TrimSpace(r.FormValue("oidc_default_users_group")),
-	}
+	oidcDefaults := f.oidc
 
 	// Remember the environment-wide inputs so the next cluster's form comes
 	// up pre-filled. Done here rather than at preview so that abandoning a
 	// half-filled form never changes the seed for the next one.
 	s.saveClusterDefaults(clusterDefaults{
-		VMSSHKeys:             strings.TrimSpace(r.FormValue("vm_ssh_keys")),
+		VMSSHKeys:             strings.Join(f.vmSSHKeys, ", "),
 		RegistryHost:          registry.Host,
 		RegistryCACert:        registry.CACertPEM,
 		RegistryUsername:      registry.Username,
@@ -646,8 +650,8 @@ func (s *Server) handleClustersApply(w http.ResponseWriter, r *http.Request) {
 	spec := capi.ApplySpec(name, s.dataDir, s.binDir, capi.ClusterConnection{
 		ID: conn.ID, URL: proxmox.NormalizeURL(conn.URL), TokenID: conn.TokenID,
 		Secret: secret, InsecureTLS: conn.InsecureTLS, IsPrimary: conn.IsPrimary,
-	}, yaml, cni, addons, registry, oidcDefaults)
-	jobID, err := s.jobs.Start(spec, `{"cluster":"`+name+`"}`)
+	}, yaml, f.cni, addons, registry, oidcDefaults)
+	jobID, err := s.jobs.StartExclusive(spec, `{"cluster":"`+name+`"}`, clusterOperationLock(name))
 	if err != nil {
 		// The row above is inserted first on purpose — clusters.name is
 		// UNIQUE, so it is what rejects a duplicate name before any real work
@@ -668,7 +672,7 @@ func (s *Server) handleClustersApply(w http.ResponseWriter, r *http.Request) {
 				time.Sleep(100 * time.Millisecond)
 			}
 		}
-		s.renderClustersPanel(w, r.Context(), session, conn, "starting job: "+err.Error())
+		s.renderClustersPanel(w, r.Context(), session, conn, clusterOperationError(err))
 		return
 	}
 	ui.RenderPartial(w, "job_progress", map[string]any{

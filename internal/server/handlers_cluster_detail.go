@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -11,6 +12,15 @@ import (
 	"pvekube/internal/jobs"
 	"pvekube/internal/ui"
 )
+
+func clusterOperationLock(name string) string { return "cluster:" + name }
+
+func clusterOperationError(err error) string {
+	if errors.Is(err, jobs.ErrResourceBusy) {
+		return "another scale, upgrade, apply, or delete operation is already running for this cluster"
+	}
+	return "starting job: " + err.Error()
+}
 
 func (s *Server) handleClusterDetailPage(w http.ResponseWriter, r *http.Request) {
 	session := r.Context().Value(ctxSessionKey{}).(string)
@@ -78,9 +88,13 @@ func hasProviderIDCondition(conditions []capi.ConditionView) bool {
 // runLifecycleJob starts a job and reloads back into the cluster status panel
 // (not a list) since that's the page the operator is already looking at.
 func (s *Server) runLifecycleJob(w http.ResponseWriter, name string, spec *jobs.Spec) {
-	jobID, err := s.jobs.Start(spec, `{"cluster":"`+name+`"}`)
+	jobID, err := s.jobs.StartExclusive(spec, `{"cluster":"`+name+`"}`, clusterOperationLock(name))
 	if err != nil {
-		http.Error(w, "starting job: "+err.Error(), http.StatusInternalServerError)
+		status := http.StatusInternalServerError
+		if errors.Is(err, jobs.ErrResourceBusy) {
+			status = http.StatusConflict
+		}
+		http.Error(w, clusterOperationError(err), status)
 		return
 	}
 	ui.RenderPartial(w, "job_progress", map[string]any{
@@ -93,9 +107,18 @@ func (s *Server) runLifecycleJob(w http.ResponseWriter, name string, spec *jobs.
 // job completes, so the "OK" button navigates to /clusters rather than
 // trying to reload the deleted cluster's status page.
 func (s *Server) runDeleteJob(w http.ResponseWriter, name string, spec *jobs.Spec) {
-	jobID, err := s.jobs.Start(spec, `{"cluster":"`+name+`"}`)
+	jobID, err := s.jobs.StartExclusive(spec, `{"cluster":"`+name+`"}`, clusterOperationLock(name))
 	if err != nil {
-		http.Error(w, "starting job: "+err.Error(), http.StatusInternalServerError)
+		status := http.StatusInternalServerError
+		if errors.Is(err, jobs.ErrResourceBusy) {
+			status = http.StatusConflict
+		}
+		http.Error(w, clusterOperationError(err), status)
+		return
+	}
+	if _, err := s.db.Exec(`UPDATE clusters SET status = 'deleting' WHERE name = ?`, name); err != nil {
+		s.jobs.Cancel(jobID)
+		http.Error(w, "marking cluster for deletion: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 	ui.RenderPartial(w, "job_progress", map[string]any{
@@ -150,7 +173,6 @@ func (s *Server) handleClusterDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.PathValue("name")
-	s.db.Exec(`UPDATE clusters SET status = 'deleting' WHERE name = ?`, name)
 
 	spec := capi.DeleteClusterSpec(s.dataDir, s.binDir, name)
 	spec.Step("Remove local record", func(c *jobs.Ctx) error {
@@ -297,9 +319,9 @@ func (s *Server) handleClusterUpgrade(w http.ResponseWriter, r *http.Request) {
 		NewSourceNode:   tmpl.Node,
 		NewTemplateVMID: tmpl.VMID,
 	})
-	jobID, err := s.jobs.Start(spec, `{"cluster":"`+name+`"}`)
+	jobID, err := s.jobs.StartExclusive(spec, `{"cluster":"`+name+`"}`, clusterOperationLock(name))
 	if err != nil {
-		s.renderUpgradePanel(w, r, name, "starting job: "+err.Error())
+		s.renderUpgradePanel(w, r, name, clusterOperationError(err))
 		return
 	}
 	// Progress renders into the upgrade panel (outside #cluster-status, which

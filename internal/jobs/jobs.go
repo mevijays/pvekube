@@ -16,8 +16,10 @@ package jobs
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 )
@@ -33,6 +35,10 @@ const (
 	StatusInterrupted Status = "interrupted"
 	StatusSkipped     Status = "skipped"
 )
+
+// ErrResourceBusy is returned by StartExclusive when another pending or
+// running job already owns the same lock key.
+var ErrResourceBusy = errors.New("resource already has an active operation")
 
 // StepFunc does the actual work of one step. It receives a Ctx providing
 // cancellation and a line-oriented log writer. Returning an error fails the
@@ -94,12 +100,13 @@ func NewEngine(db *sql.DB, logDir string, redact func(string) string) *Engine {
 	}
 }
 
-// ReconcileOnStartup marks any job left "running" from a previous process as
-// "interrupted" so the UI can surface it honestly instead of showing a stale
-// spinner forever.
+// ReconcileOnStartup marks any pending/running job left by a previous process
+// as "interrupted" so the UI can surface it honestly instead of showing a
+// stale spinner forever. Including pending also releases an exclusive lock if
+// the process died after committing the job rows but before its goroutine ran.
 func (e *Engine) ReconcileOnStartup() error {
-	_, err := e.db.Exec(`UPDATE jobs SET status = ?, ended_at = CURRENT_TIMESTAMP, error = 'application restarted mid-job' WHERE status = ?`,
-		StatusInterrupted, StatusRunning)
+	_, err := e.db.Exec(`UPDATE jobs SET status = ?, ended_at = CURRENT_TIMESTAMP, error = 'application restarted mid-job' WHERE status IN (?, ?)`,
+		StatusInterrupted, StatusPending, StatusRunning)
 	if err != nil {
 		return err
 	}
@@ -110,9 +117,34 @@ func (e *Engine) ReconcileOnStartup() error {
 // Start creates the job row + step rows and runs it in the background.
 // Returns the job ID immediately; use Subscribe or the DB to observe progress.
 func (e *Engine) Start(spec *Spec, paramsJSON string) (int64, error) {
-	res, err := e.db.Exec(`INSERT INTO jobs (kind, title, status, params_json) VALUES (?, ?, ?, ?)`,
-		spec.Kind, spec.Title, StatusPending, paramsJSON)
+	return e.start(spec, paramsJSON, "")
+}
+
+// StartExclusive starts a job while atomically reserving lockKey. A second
+// pending/running job using the same key is rejected by the database's partial
+// unique index; completed jobs retain the key as useful history without
+// blocking later operations.
+func (e *Engine) StartExclusive(spec *Spec, paramsJSON, lockKey string) (int64, error) {
+	lockKey = strings.TrimSpace(lockKey)
+	if lockKey == "" {
+		return 0, errors.New("exclusive job lock key is required")
+	}
+	return e.start(spec, paramsJSON, lockKey)
+}
+
+func (e *Engine) start(spec *Spec, paramsJSON, lockKey string) (int64, error) {
+	tx, err := e.db.Begin()
 	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.Exec(`INSERT INTO jobs (kind, title, status, params_json, lock_key) VALUES (?, ?, ?, ?, ?)`,
+		spec.Kind, spec.Title, StatusPending, paramsJSON, lockKey)
+	if err != nil {
+		if lockKey != "" && strings.Contains(err.Error(), "UNIQUE constraint failed: jobs.lock_key") {
+			return 0, fmt.Errorf("%w: %s", ErrResourceBusy, lockKey)
+		}
 		return 0, err
 	}
 	jobID, err := res.LastInsertId()
@@ -120,10 +152,13 @@ func (e *Engine) Start(spec *Spec, paramsJSON string) (int64, error) {
 		return 0, err
 	}
 	for i, st := range spec.Steps {
-		if _, err := e.db.Exec(`INSERT INTO job_steps (job_id, seq, title, status) VALUES (?, ?, ?, ?)`,
+		if _, err := tx.Exec(`INSERT INTO job_steps (job_id, seq, title, status) VALUES (?, ?, ?, ?)`,
 			jobID, i, st.title, StatusPending); err != nil {
 			return 0, err
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

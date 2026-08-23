@@ -46,6 +46,19 @@
     <input type="hidden" name="name" value="{{.ClusterName}}">
     <input type="hidden" name="template_id" value="{{.TemplateID}}">
     <input type="hidden" name="cni" value="{{.CNI}}">
+    <input type="hidden" name="control_plane_count" value="{{.ControlPlaneCount}}">
+    <input type="hidden" name="worker_count" value="{{.WorkerCount}}">
+    <input type="hidden" name="bridge" value="{{.Bridge}}">
+    <input type="hidden" name="num_sockets" value="{{.NumSockets}}">
+    <input type="hidden" name="num_cores" value="{{.NumCores}}">
+    <input type="hidden" name="memory_mib" value="{{.MemoryMiB}}">
+    <input type="hidden" name="boot_volume_size" value="{{.BootVolumeSize}}">
+    <input type="hidden" name="gateway" value="{{.Gateway}}">
+    <input type="hidden" name="ip_prefix" value="{{.IPPrefix}}">
+    <input type="hidden" name="control_plane_endpoint_ip" value="{{.ControlPlaneEndpoint}}">
+    <input type="hidden" name="node_ip_range" value="{{.NodeIPRange}}">
+    <input type="hidden" name="dns_servers" value="{{.DNSServers}}">
+    {{range .AllowedNodes}}<input type="hidden" name="allowed_nodes" value="{{.}}">{{end}}
     {{if .InstallMetricsServer}}<input type="hidden" name="install_metrics_server" value="1">{{end}}
     {{if .InstallIstio}}<input type="hidden" name="install_istio" value="1">{{end}}
     {{if .InstallMetalLB}}<input type="hidden" name="install_metallb" value="1">

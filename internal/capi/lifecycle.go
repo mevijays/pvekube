@@ -173,6 +173,19 @@ func deleteClusterArgs(kcPath, clusterName string) []string {
 		"--wait=false", "--ignore-not-found=true"}
 }
 
+// clusterLookupArgs renders an existence check whose exit status distinguishes
+// a successful NotFound from transport/authentication failures. With
+// --ignore-not-found kubectl exits successfully and prints nothing only when
+// the object is genuinely absent.
+func clusterLookupArgs(kcPath, clusterName string) []string {
+	return []string{"--kubeconfig", kcPath, "get", "cluster", clusterName,
+		"-o", "name", "--ignore-not-found=true", "--request-timeout=10s"}
+}
+
+func clusterConfirmedAbsent(output []byte, err error) bool {
+	return err == nil && strings.TrimSpace(string(output)) == ""
+}
+
 func DeleteClusterSpec(dataDir, binDir, clusterName string) *jobs.Spec {
 	return jobs.NewSpec("cluster.delete", "Delete cluster "+clusterName).
 		Step("kubectl delete cluster", func(c *jobs.Ctx) error {
@@ -211,20 +224,28 @@ func DeleteClusterSpec(dataDir, binDir, clusterName string) *jobs.Spec {
 
 			ticker := time.NewTicker(10 * time.Second)
 			defer ticker.Stop()
+			var lastLookupErr error
 			for {
 				select {
 				case <-c.Done():
 					return c.Err()
 				case <-ticker.C:
-					err := exec.CommandContext(c, kubectlBin, "--kubeconfig", kcPath,
-						"get", "cluster", clusterName).Run()
-					if err != nil {
-						// kubectl get returning an error (NotFound, in practice) is
-						// exactly the "gone" signal we're waiting for.
+					lookupOut, lookupErr := exec.CommandContext(c, kubectlBin,
+						clusterLookupArgs(kcPath, clusterName)...).CombinedOutput()
+					if clusterConfirmedAbsent(lookupOut, lookupErr) {
 						c.Logf("✓ Cluster %s and all its VMs are fully torn down", clusterName)
 						return nil
 					}
+					if lookupErr != nil {
+						lastLookupErr = fmt.Errorf("%w: %s", lookupErr, strings.TrimSpace(string(lookupOut)))
+						c.Logf("Could not confirm whether cluster %s still exists; will retry: %v", clusterName, lastLookupErr)
+					} else {
+						lastLookupErr = nil
+					}
 					if time.Now().After(deadline) {
+						if lastLookupErr != nil {
+							return fmt.Errorf("could not confirm deletion of cluster %s after 15 minutes; the management cluster remained unreachable: %w", clusterName, lastLookupErr)
+						}
 						return fmt.Errorf("cluster %s still exists after 15 minutes — teardown may be stuck; check `kubectl describe cluster %s` on the management cluster", clusterName, clusterName)
 					}
 					// Log remaining machines so the user can see teardown progress.
