@@ -224,6 +224,11 @@ type clusterForm struct {
 	addons               capi.AddonSelection
 	registry             capi.RegistryConfig
 	oidc                 capi.OIDCConfig
+	privateDNS           capi.PrivateDNSConfig
+	// internalCA is the organisation's private CA in PEM. Separate from
+	// registry.CACertPEM because it is useful without a registry at all —
+	// any internal HTTPS endpoint the nodes or pods reach needs it.
+	internalCA string
 }
 
 func (s *Server) parseClusterForm(r *http.Request, connID int64) (clusterForm, error) {
@@ -279,6 +284,11 @@ func (s *Server) parseClusterForm(r *http.Request, connID int64) (clusterForm, e
 			CACertPEM:         strings.TrimSpace(r.FormValue("oidc_ca_cert")),
 			DefaultUsersGroup: strings.TrimSpace(r.FormValue("oidc_default_users_group")),
 		},
+		privateDNS: capi.PrivateDNSConfig{
+			Domains: capi.ParseDNSList(r.FormValue("private_dns_domains")),
+			Servers: capi.ParseDNSList(r.FormValue("private_dns_servers")),
+		},
+		internalCA: strings.TrimSpace(r.FormValue("internal_ca_cert")),
 	}
 	if f.name == "" {
 		return f, errBadInput("cluster name is required")
@@ -293,6 +303,15 @@ func (s *Server) parseClusterForm(r *http.Request, connID int64) (clusterForm, e
 		return f, err
 	}
 	if err := validateGitOpsForm(f.addons); err != nil {
+		return f, err
+	}
+	// Checked here rather than in the apply step because a Corefile CoreDNS
+	// refuses to load does not fail loudly — CoreDNS crash-loops afterwards
+	// and every name in the cluster stops resolving.
+	if err := f.privateDNS.Validate(); err != nil {
+		return f, errBadInput(err.Error())
+	}
+	if err := validateInternalCAForm(f.internalCA); err != nil {
 		return f, err
 	}
 	for _, s := range strings.Split(r.FormValue("dns_servers"), ",") {
@@ -506,6 +525,7 @@ func (s *Server) handleClustersPreview(w http.ResponseWriter, r *http.Request) {
 		Gateway: f.gateway, IPPrefix: f.ipPrefix, DNSServers: f.dnsServers, Bridge: f.bridge,
 		BootVolumeSizeGB: f.bootVolumeSize, NumSockets: f.numSockets, NumCores: f.numCores, MemoryMiB: f.memoryMiB,
 		Registry: f.registry, OIDC: f.oidc, ConnectionID: conn.ID,
+		InternalCA: f.internalCA, PrivateDNS: f.privateDNS,
 	}
 	// Keep the registry password out of the rendered manifest, job logs, and
 	// anything else the redactor covers. The CA and host are fine to show.
@@ -534,7 +554,13 @@ func (s *Server) handleClustersPreview(w http.ResponseWriter, r *http.Request) {
 		"InstallMetricsServer": f.addons.MetricsServer, "InstallIstio": f.addons.Istio,
 		"InstallMetalLB": f.addons.MetalLB, "MetalLBIPPool": f.addons.MetalLBIPPool,
 		"InstallGitOps": f.addons.GitOps,
-		"GitOpsRepoURL": f.addons.GitOpsRepoURL, "GitOpsBranch": f.addons.GitOpsBranch,
+		// Carried through the preview into the apply POST as hidden fields —
+		// parseClusterForm runs again on apply, so anything missing from
+		// cluster_preview.html is silently lost between the two.
+		"PrivateDNSDomains": strings.Join(f.privateDNS.Domains, ", "),
+		"PrivateDNSServers": strings.Join(f.privateDNS.Servers, ", "),
+		"InternalCACert":    f.internalCA,
+		"GitOpsRepoURL":     f.addons.GitOpsRepoURL, "GitOpsBranch": f.addons.GitOpsBranch,
 		"GitOpsPath": f.addons.GitOpsPath, "GitOpsUsername": f.addons.GitOpsUsername,
 		"GitOpsToken": f.addons.GitOpsToken, "GitOpsCACert": f.addons.GitOpsCACert,
 		"RegistryHost": f.registry.Host, "RegistryCACert": f.registry.CACertPEM,
@@ -646,11 +672,15 @@ func (s *Server) handleClustersApply(w http.ResponseWriter, r *http.Request) {
 		GitOpsUsername: addons.GitOpsUsername,
 		GitOpsToken:    addons.GitOpsToken,
 		GitOpsCACert:   addons.GitOpsCACert,
+
+		InternalCACert:    f.internalCA,
+		PrivateDNSDomains: strings.Join(f.privateDNS.Domains, ", "),
+		PrivateDNSServers: strings.Join(f.privateDNS.Servers, ", "),
 	})
 	spec := capi.ApplySpec(name, s.dataDir, s.binDir, capi.ClusterConnection{
 		ID: conn.ID, URL: proxmox.NormalizeURL(conn.URL), TokenID: conn.TokenID,
 		Secret: secret, InsecureTLS: conn.InsecureTLS, IsPrimary: conn.IsPrimary,
-	}, yaml, f.cni, addons, registry, oidcDefaults)
+	}, yaml, f.cni, addons, registry, oidcDefaults, f.privateDNS, f.internalCA)
 	jobID, err := s.jobs.StartExclusive(spec, `{"cluster":"`+name+`"}`, clusterOperationLock(name))
 	if err != nil {
 		// The row above is inserted first on purpose — clusters.name is
@@ -679,4 +709,27 @@ func (s *Server) handleClustersApply(w http.ResponseWriter, r *http.Request) {
 		"JobID": jobID, "Title": spec.Title,
 		"WrapperID": "clusters-panel", "ReloadURL": "/clusters/panel", "ReloadTarget": "#clusters-panel",
 	})
+}
+
+// validateInternalCAForm applies the same "is this actually a certificate"
+// check the registry and OIDC CA fields get. Worth repeating here because
+// this CA reaches further than either of those: a malformed value would be
+// written into every node's OS trust store and published to every namespace
+// as a ConfigMap, so it fails at form time rather than halfway through an
+// apply.
+func validateInternalCAForm(ca string) error {
+	if ca == "" {
+		return nil
+	}
+	block, _ := pem.Decode([]byte(ca))
+	if block == nil {
+		return errBadInput("internal CA certificate is not valid PEM — it should start with -----BEGIN CERTIFICATE-----")
+	}
+	if block.Type != "CERTIFICATE" {
+		return errBadInput("internal CA must be a CERTIFICATE PEM block, got " + block.Type)
+	}
+	if _, err := x509.ParseCertificate(block.Bytes); err != nil {
+		return errBadInput("internal CA certificate could not be parsed: " + err.Error())
+	}
+	return nil
 }

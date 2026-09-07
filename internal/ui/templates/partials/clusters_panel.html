@@ -177,6 +177,25 @@
             <input type="text" name="dns_servers" value="172.16.1.1, 1.1.1.1" placeholder="8.8.8.8, 8.8.4.4" required class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
           </div>
           <div>
+            <label class="mb-1 block text-sm font-medium text-slate-300">Private DNS domains <span class="text-slate-500">(optional)</span></label>
+            <input type="text" name="private_dns_domains" value="{{.Defaults.PrivateDNSDomains}}" placeholder="mylab.lan"
+                   class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+            <p class="mt-1 text-xs text-slate-500">
+              Domains only your internal DNS knows. Without this, pods resolve them through CoreDNS's catch-all, which
+              forwards to <em>all</em> the DNS servers above at random — so a public resolver answers roughly half the
+              lookups with NXDOMAIN and internal names fail intermittently.
+            </p>
+            {{if .Defaults.PrivateDNSDomains}}<p class="mt-1 text-xs text-slate-500"><i class="fa fa-history mr-1"></i>Carried over from your last cluster — edit to override.</p>{{end}}
+          </div>
+          <div>
+            <label class="mb-1 block text-sm font-medium text-slate-300">Private DNS server <span class="text-slate-500">(required if a domain is set)</span></label>
+            <input type="text" name="private_dns_servers" value="{{.Defaults.PrivateDNSServers}}" placeholder="172.16.1.1"
+                   class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+            <p class="mt-1 text-xs text-slate-500">
+              IP address only. The domains above are sent <em>only</em> here — list the public resolvers in "DNS servers", never in this field.
+            </p>
+          </div>
+          <div>
             <label class="mb-1 block text-sm font-medium text-slate-300">SSH public keys <span class="text-slate-500">(optional, comma-separated)</span></label>
             <input type="text" name="vm_ssh_keys" value="{{.Defaults.VMSSHKeys}}" placeholder="ssh-ed25519 AAAA..." class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
             {{if .Defaults.VMSSHKeys}}<p class="mt-1 text-xs text-slate-500"><i class="fa fa-history mr-1"></i>Carried over from your last cluster — edit to override.</p>{{end}}
@@ -302,6 +321,19 @@
         </div>
         {{end}}
         <div class="space-y-3">
+          <div>
+            <label class="mb-1 block text-sm font-medium text-slate-300">Internal CA certificate <span class="text-slate-500">(optional, PEM)</span></label>
+            <textarea name="internal_ca_cert" rows="4" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----"
+                      class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-white">{{.Defaults.InternalCACert}}</textarea>
+            <p class="mt-1 text-xs text-slate-500">
+              The CA behind <em>any</em> internal HTTPS endpoint — an artifact repository, an internal portal, a Git server, an OIDC issuer.
+              It is added to every node's OS trust store <em>and</em> published as the <code class="text-slate-300">pvekube-internal-ca</code>
+              ConfigMap in every namespace, because a pod cannot see the node's trust store and would otherwise fail with
+              <code class="text-slate-300">x509: certificate signed by unknown authority</code>.
+              Applies with or without a registry below; mount the ConfigMap in workloads that need it.
+            </p>
+            {{if .Defaults.InternalCACert}}<p class="mt-1 text-xs text-slate-500"><i class="fa fa-history mr-1"></i>Carried over from your last cluster — edit to override.</p>{{end}}
+          </div>
           <div>
             <label class="mb-1 block text-sm font-medium text-slate-300">Registry host</label>
             <input type="text" name="registry_host" value="{{.Defaults.RegistryHost}}" placeholder="registry.internal.lan:5000"

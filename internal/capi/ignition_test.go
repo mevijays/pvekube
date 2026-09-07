@@ -110,7 +110,7 @@ spec:
 // CRITICAL and halts boot entirely, confirmed live against a real VM stuck
 // in an emergency-shell/reboot loop. Any files: entry under /usr must be
 // dropped when applying ignition format, not just left to fail at runtime.
-func TestInjectIgnitionFormatDropsUsrFiles(t *testing.T) {
+func TestInjectIgnitionFormatRehomesCACertsAndDropsOtherUsrFiles(t *testing.T) {
 	manifest := `apiVersion: controlplane.cluster.x-k8s.io/v1beta1
 kind: KubeadmControlPlane
 metadata:
@@ -122,6 +122,10 @@ spec:
       owner: root:root
       path: /usr/local/share/ca-certificates/pvekube-registry.crt
       permissions: "0644"
+    - content: something-else
+      owner: root:root
+      path: /usr/local/bin/helper
+      permissions: "0755"
     - content: containerd-ca
       owner: root:root
       path: /etc/containerd/certs.d/registry/ca.crt
@@ -133,11 +137,40 @@ spec:
 	}
 	docs := decodeDocs(t, out)
 	files := nested(t, docs[0], "spec", "kubeadmConfigSpec", "files").([]any)
+
+	// Nothing may still target /usr: Ignition halts the boot on a write to
+	// the read-only partition, which is the whole reason this pass exists.
 	for _, f := range files {
 		path := f.(map[string]any)["path"]
 		if s, ok := path.(string); ok && strings.HasPrefix(s, "/usr") {
 			t.Fatalf("a /usr file survived: %v", path)
 		}
+	}
+	// The CA must be kept, not discarded: dropping it left Flatcar nodes
+	// unable to verify TLS against any internal HTTPS endpoint. It moves to
+	// Flatcar's writable trust-anchor directory, renamed .pem because
+	// update-ca-certificates ignores anything else there.
+	if !filePathPresent(files, "/etc/ssl/certs/pvekube-registry.pem") {
+		t.Fatalf("the CA was not rehomed to Flatcar's trust anchor directory: %v", files)
+	}
+	// Its content has to survive the move, or the file is decorative.
+	var found bool
+	for _, f := range files {
+		m := f.(map[string]any)
+		if m["path"] == "/etc/ssl/certs/pvekube-registry.pem" {
+			found = true
+			if m["content"] != "trust-bundle" {
+				t.Fatalf("rehomed CA lost its content: %v", m["content"])
+			}
+		}
+	}
+	if !found {
+		t.Fatal("rehomed CA entry not found")
+	}
+	// A non-CA /usr file has no defensible destination, so it is still
+	// dropped rather than guessed at.
+	if filePathPresent(files, "/usr/local/bin/helper") || filePathPresent(files, "/etc/ssl/certs/helper") {
+		t.Fatalf("a non-CA /usr file should be dropped, not rehomed: %v", files)
 	}
 	if !filePathPresent(files, "/etc/containerd/certs.d/registry/ca.crt") {
 		t.Fatalf("the surviving /etc file is missing: %v", files)
@@ -225,17 +258,23 @@ func TestInjectIgnitionFormatComposesWithRegistryTrust(t *testing.T) {
 	if got := nested(t, docs[1], "spec", "kubeadmConfigSpec", "format"); got != "ignition" {
 		t.Fatalf("format = %v, want ignition", got)
 	}
-	// 5: InjectRegistryTrust's usual 4 minus the /usr/local/share/
-	// ca-certificates entry dropUsrFiles removes (see
-	// TestInjectIgnitionFormatDropsUsrFiles), plus the 2 untaint-workaround
-	// files injectUntaintWorkaround adds.
+	// 6: InjectRegistryTrust's usual 4 — the /usr/local/share/
+	// ca-certificates entry is rehomed to /etc/ssl/certs rather than
+	// dropped (see TestInjectIgnitionFormatRehomesCACertsAndDropsOtherUsrFiles)
+	// — plus the 2 untaint-workaround files injectUntaintWorkaround adds.
 	files := nested(t, docs[1], "spec", "kubeadmConfigSpec", "files")
 	list, ok := files.([]any)
-	if !ok || len(list) != 5 {
+	if !ok || len(list) != 6 {
 		t.Fatalf("unexpected files list after ignition injection: %v", files)
 	}
 	if !filePathPresent(list, "/etc/pvekube/configure-registry.sh") {
 		t.Fatal("registry setup script missing after ignition injection")
+	}
+	// The registry CA has to reach Flatcar's OS trust store too, not just
+	// containerd's certs.d — a Flatcar node that can pull images but cannot
+	// verify an internal HTTPS endpoint is the bug this guards.
+	if !filePathPresent(list, "/etc/ssl/certs/pvekube-registry.internal.lan_5000.pem") {
+		t.Fatalf("registry CA missing from Flatcar's trust anchors: %v", list)
 	}
 	if !filePathPresent(list, untaintScriptPath) {
 		t.Fatal("untaint script missing after ignition injection")

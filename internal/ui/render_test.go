@@ -64,6 +64,10 @@ func defaultsStub() any {
 		GitOpsUsername string
 		GitOpsToken    string
 		GitOpsCACert   string
+
+		InternalCACert    string
+		PrivateDNSDomains string
+		PrivateDNSServers string
 	}{
 		VMSSHKeys:      "ssh-ed25519 AAAAC3Nz",
 		RegistryHost:   "registry.internal.lan:5000",
@@ -73,6 +77,10 @@ func defaultsStub() any {
 		OIDCIssuerURL:         "https://dex.internal.lan",
 		OIDCClientID:          "kubernetes",
 		OIDCDefaultUsersGroup: "k8susers",
+
+		InternalCACert:    "-----BEGIN CERTIFICATE-----\nMIIC\n-----END CERTIFICATE-----",
+		PrivateDNSDomains: "mylab.lan",
+		PrivateDNSServers: "172.16.1.1",
 
 		GitOpsRepoURL: "https://gitea.internal.lan/ops/config.git",
 		GitOpsBranch:  "main",

@@ -80,6 +80,20 @@ type GenerateInput struct {
 	// registry and leaves the manifest untouched.
 	Registry RegistryConfig
 
+	// InternalCA is the organisation's private CA, in PEM. Distinct from
+	// Registry.CACertPEM, which only ever covered the registry: this is the
+	// CA behind *any* internal HTTPS endpoint the nodes or workloads talk
+	// to, so it is configurable without a registry and reaches places the
+	// registry CA never did. See trust.go. Empty leaves the manifest
+	// untouched.
+	InternalCA string
+
+	// PrivateDNS routes internal domains to internal resolvers in the
+	// workload cluster's CoreDNS. Applied after the cluster is up (it is a
+	// ConfigMap, not bootstrap data), so it is carried here only so the
+	// preview and the apply job agree on one source of truth. See dns.go.
+	PrivateDNS PrivateDNSConfig
+
 	// OIDC, when set, wires the workload cluster's API server to
 	// authenticate against Dex/GitHub/Azure Entra ID/any OIDC provider —
 	// see InjectOIDCAuth. Zero value means no OIDC and leaves the manifest
@@ -221,6 +235,14 @@ func Generate(ctx context.Context, dataDir, binDir string, in GenerateInput) (st
 	// a no-op: every cluster gets credentialsRef now, regardless of which
 	// connection it targets.
 	manifest, err = InjectCredentialsRef(manifest, in.ConnectionID)
+	if err != nil {
+		return "", err
+	}
+
+	// The internal CA goes into every node's OS trust store. Must precede
+	// InjectIgnitionFormat: that pass rewrites /usr paths for Flatcar, so
+	// this one has to have written them already. No-op when unset.
+	manifest, err = InjectInternalCATrust(manifest, in.InternalCA)
 	if err != nil {
 		return "", err
 	}
@@ -468,12 +490,27 @@ type ClusterConnection struct {
 // yet. Any selected post-provision addons (metrics-server, Istio, MetalLB)
 // are installed last, after CNI, so they land on a cluster that already has
 // pod networking.
-func ApplySpec(clusterName, dataDir, binDir string, conn ClusterConnection, manifestYAML string, cni CNIFlavor, addons AddonSelection, registry RegistryConfig, oidc OIDCConfig) *jobs.Spec {
+func ApplySpec(clusterName, dataDir, binDir string, conn ClusterConnection, manifestYAML string, cni CNIFlavor, addons AddonSelection, registry RegistryConfig, oidc OIDCConfig, dns PrivateDNSConfig, internalCA string) *jobs.Spec {
 	spec := jobs.NewSpec("cluster.apply", "Apply cluster "+clusterName).
 		Step("Sync connection credentials", EnsureConnectionCredentialsSecret(dataDir, binDir, conn.ID, conn.URL, conn.TokenID, conn.Secret, conn.InsecureTLS)).
 		Step("kubectl apply", ApplyStep(dataDir, binDir, manifestYAML)).
 		Step("Install CNI", EnsureCNIStep(dataDir, binDir, clusterName, cni)).
 		Step("Wait for nodes & CNI readiness", WaitForNodesReadyStep(dataDir, binDir, clusterName))
+	// Private DNS comes first among the post-provision steps, and the order
+	// is load-bearing rather than cosmetic: everything below that talks to
+	// an internal host from inside the pod network — Flux against an
+	// internal Git server, most obviously — resolves through CoreDNS, and
+	// until this runs those lookups are a coin flip between the internal
+	// resolver and a public one that answers NXDOMAIN. See dns.go.
+	if dns.Enabled() {
+		spec.Step("Configure private DNS", ConfigurePrivateDNSStep(dataDir, binDir, clusterName, dns))
+	}
+	// Likewise before the addons: a workload pulling a Helm chart or Git
+	// repo over internal HTTPS needs the CA published before it starts, and
+	// pods cannot see the node's trust store. See trust.go.
+	if strings.TrimSpace(internalCA) != "" {
+		spec.Step("Publish internal CA for workloads", DistributeInternalCAStep(dataDir, binDir, clusterName, internalCA))
+	}
 	// Registry trust itself is already on the nodes via the manifest; this
 	// only adds the pull credentials, which need a reachable API server.
 	if registry.HasAuth() {

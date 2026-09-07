@@ -40,6 +40,17 @@ type clusterDefaults struct {
 	GitOpsUsername string
 	GitOpsToken    string
 	GitOpsCACert   string
+
+	// InternalCACert is the organisation's private CA. Reaches further than
+	// RegistryCACert ever did — node trust stores and a per-namespace
+	// ConfigMap for pods — and is settable without a registry. See
+	// internal/capi/trust.go.
+	InternalCACert string
+	// PrivateDNS* are stored as the operator typed them (comma-separated)
+	// rather than as parsed lists, so the form round-trips their formatting
+	// unchanged. capi.ParseDNSList does the splitting on the way in.
+	PrivateDNSDomains string
+	PrivateDNSServers string
 }
 
 // loadClusterDefaults reads the remembered inputs. A missing row (nothing
@@ -50,11 +61,13 @@ func (s *Server) loadClusterDefaults() clusterDefaults {
 	var sealed, gitopsSealed []byte
 	row := s.db.QueryRow(`SELECT vm_ssh_keys, registry_host, registry_ca_cert, registry_username, registry_password_sealed,
 	                              oidc_provider, oidc_issuer_url, oidc_client_id, oidc_username_claim, oidc_groups_claim, oidc_ca_cert, oidc_default_users_group,
-	                              gitops_repo_url, gitops_branch, gitops_path, gitops_username, gitops_token_sealed, gitops_ca_cert
+	                              gitops_repo_url, gitops_branch, gitops_path, gitops_username, gitops_token_sealed, gitops_ca_cert,
+	                              internal_ca_cert, private_dns_domains, private_dns_servers
 	                        FROM cluster_defaults WHERE id = 1`)
 	if err := row.Scan(&d.VMSSHKeys, &d.RegistryHost, &d.RegistryCACert, &d.RegistryUsername, &sealed,
 		&d.OIDCProvider, &d.OIDCIssuerURL, &d.OIDCClientID, &d.OIDCUsernameClaim, &d.OIDCGroupsClaim, &d.OIDCCACert, &d.OIDCDefaultUsersGroup,
-		&d.GitOpsRepoURL, &d.GitOpsBranch, &d.GitOpsPath, &d.GitOpsUsername, &gitopsSealed, &d.GitOpsCACert); err != nil {
+		&d.GitOpsRepoURL, &d.GitOpsBranch, &d.GitOpsPath, &d.GitOpsUsername, &gitopsSealed, &d.GitOpsCACert,
+		&d.InternalCACert, &d.PrivateDNSDomains, &d.PrivateDNSServers); err != nil {
 		if err != sql.ErrNoRows {
 			slog.Warn("loading cluster defaults", "err", err)
 		}
@@ -114,6 +127,10 @@ func (s *Server) saveClusterDefaults(d clusterDefaults) {
 		GitOpsUsername: firstNonEmpty(d.GitOpsUsername, cur.GitOpsUsername),
 		GitOpsToken:    firstNonEmpty(d.GitOpsToken, cur.GitOpsToken),
 		GitOpsCACert:   firstNonEmpty(d.GitOpsCACert, cur.GitOpsCACert),
+
+		InternalCACert:    firstNonEmpty(d.InternalCACert, cur.InternalCACert),
+		PrivateDNSDomains: firstNonEmpty(d.PrivateDNSDomains, cur.PrivateDNSDomains),
+		PrivateDNSServers: firstNonEmpty(d.PrivateDNSServers, cur.PrivateDNSServers),
 	}
 
 	var gitopsSealed []byte
@@ -139,8 +156,9 @@ func (s *Server) saveClusterDefaults(d clusterDefaults) {
 	if _, err := s.db.Exec(`
 		INSERT INTO cluster_defaults (id, vm_ssh_keys, registry_host, registry_ca_cert, registry_username, registry_password_sealed,
 		                              oidc_provider, oidc_issuer_url, oidc_client_id, oidc_username_claim, oidc_groups_claim, oidc_ca_cert, oidc_default_users_group,
-		                              gitops_repo_url, gitops_branch, gitops_path, gitops_username, gitops_token_sealed, gitops_ca_cert, updated_at)
-		VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		                              gitops_repo_url, gitops_branch, gitops_path, gitops_username, gitops_token_sealed, gitops_ca_cert,
+		                              internal_ca_cert, private_dns_domains, private_dns_servers, updated_at)
+		VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(id) DO UPDATE SET
 			vm_ssh_keys = excluded.vm_ssh_keys,
 			registry_host = excluded.registry_host,
@@ -160,10 +178,14 @@ func (s *Server) saveClusterDefaults(d clusterDefaults) {
 			gitops_username = excluded.gitops_username,
 			gitops_token_sealed = excluded.gitops_token_sealed,
 			gitops_ca_cert = excluded.gitops_ca_cert,
+			internal_ca_cert = excluded.internal_ca_cert,
+			private_dns_domains = excluded.private_dns_domains,
+			private_dns_servers = excluded.private_dns_servers,
 			updated_at = CURRENT_TIMESTAMP`,
 		merged.VMSSHKeys, merged.RegistryHost, merged.RegistryCACert, merged.RegistryUsername, sealed,
 		merged.OIDCProvider, merged.OIDCIssuerURL, merged.OIDCClientID, merged.OIDCUsernameClaim, merged.OIDCGroupsClaim, merged.OIDCCACert, merged.OIDCDefaultUsersGroup,
-		merged.GitOpsRepoURL, merged.GitOpsBranch, merged.GitOpsPath, merged.GitOpsUsername, gitopsSealed, merged.GitOpsCACert); err != nil {
+		merged.GitOpsRepoURL, merged.GitOpsBranch, merged.GitOpsPath, merged.GitOpsUsername, gitopsSealed, merged.GitOpsCACert,
+		merged.InternalCACert, merged.PrivateDNSDomains, merged.PrivateDNSServers); err != nil {
 		// Never fail the cluster launch over a convenience feature.
 		slog.Warn("saving cluster defaults", "err", err)
 	}

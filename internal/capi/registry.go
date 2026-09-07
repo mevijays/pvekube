@@ -180,6 +180,21 @@ func InjectRegistryTrust(manifestYAML string, reg RegistryConfig) (string, error
 		return manifestYAML, nil
 	}
 
+	return injectBootstrapFiles(manifestYAML, reg.files(), registrySetupScriptPath,
+		"registry trust requested but the generated manifest had no KubeadmControlPlane or KubeadmConfigTemplate to inject into")
+}
+
+// injectBootstrapFiles appends files to every kubeadm bootstrap document's
+// files: list and preKubeadmCmd to its preKubeadmCommands, leaving every
+// other document untouched.
+//
+// Extracted so registry trust and internal-CA trust (trust.go) share one
+// implementation rather than two copies of the decode-find-mutate-reencode
+// walk that drift apart. Both need identical behaviour on the parts that
+// are easy to get subtly wrong — appending to a files: key that may be
+// absent, null, or already populated, and preserving unrelated documents
+// byte-for-byte — so there should only ever be one of them.
+func injectBootstrapFiles(manifestYAML string, files []cloudInitFile, preKubeadmCmd, noTargetErr string) (string, error) {
 	dec := yaml.NewDecoder(strings.NewReader(manifestYAML))
 	var docs []*yaml.Node
 	for {
@@ -201,21 +216,23 @@ func InjectRegistryTrust(manifestYAML string, reg RegistryConfig) (string, error
 			continue
 		}
 		filesNode := ensureSeqNode(configSpec, "files")
-		for _, f := range reg.files() {
+		for _, f := range files {
 			n, err := literalContentNode(f)
 			if err != nil {
 				return "", err
 			}
 			filesNode.Content = append(filesNode.Content, n)
 		}
-		cmdsNode := ensureSeqNode(configSpec, "preKubeadmCommands")
-		cmdsNode.Content = append(cmdsNode.Content, &yaml.Node{
-			Kind: yaml.ScalarNode, Tag: "!!str", Value: registrySetupScriptPath,
-		})
+		if preKubeadmCmd != "" {
+			cmdsNode := ensureSeqNode(configSpec, "preKubeadmCommands")
+			cmdsNode.Content = append(cmdsNode.Content, &yaml.Node{
+				Kind: yaml.ScalarNode, Tag: "!!str", Value: preKubeadmCmd,
+			})
+		}
 		patched++
 	}
 	if patched == 0 {
-		return "", fmt.Errorf("registry trust requested but the generated manifest had no KubeadmControlPlane or KubeadmConfigTemplate to inject into")
+		return "", fmt.Errorf("%s", noTargetErr)
 	}
 
 	var out bytes.Buffer

@@ -104,7 +104,14 @@ func defaultFilePermissions(configSpec *yaml.Node) {
 	}
 }
 
-// dropUsrFiles removes any files: entry whose path targets /usr.
+// flatcarTrustAnchorDir is where Flatcar takes operator-supplied CA
+// certificates. Flatcar's update-ca-certificates scans this directory for
+// *.pem and regenerates the system bundle from them, which is the
+// documented way to add a CA to an image whose /usr cannot be written.
+const flatcarTrustAnchorDir = "/etc/ssl/certs"
+
+// dropUsrFiles rehomes CA certificates written under /usr and removes any
+// other files: entry targeting /usr.
 //
 // Flatcar (and Ignition-based immutable-OS images generally) ships /usr as
 // a read-only, dm-verity-protected partition — not just during
@@ -113,14 +120,23 @@ func defaultFilePermissions(configSpec *yaml.Node) {
 // continuing, confirmed live: a real control-plane VM hung forever with
 // "Ignition failed: failed to create files: ... mkdir /sysroot/usr/local/
 // share: read-only file system" on its console, having never reached
-// kubeadm at all. The offending entry here is
-// RegistryConfig.systemCertPath() (registry.go) — it drops the registry's
-// CA into /usr/local/share/ca-certificates for the OS-wide trust store,
-// which cloud-init-based flavors handle fine. It isn't load-bearing for
-// Flatcar: containerd's own pull trust already comes from the sibling
-// /etc/containerd/certs.d/.../ca.crt entry, which lives under /etc and is
-// writable. Scoped to any /usr path rather than that one specifically, so
-// this stays correct if a future file ever targets /usr again.
+// kubeadm at all. The offending entry is RegistryConfig.systemCertPath()
+// (registry.go), which puts the internal CA in /usr/local/share/
+// ca-certificates for the OS-wide trust store — fine on cloud-init flavors,
+// impossible here.
+//
+// This used to delete that entry outright, on the reasoning that containerd
+// gets its pull trust from the sibling /etc/containerd/certs.d/.../ca.crt
+// and so nothing was lost. That reasoning was too narrow: the OS trust
+// store is what everything *other* than containerd uses, so dropping it
+// left Flatcar nodes unable to verify TLS against any internal HTTPS
+// endpoint — an internal Git host, an artifact repository, an OIDC issuer —
+// while Ubuntu nodes built from the same form input could. Flatcar can hold
+// the certificate perfectly well; it just has to go somewhere writable, so
+// the path is rewritten into /etc/ssl/certs (.pem, as update-ca-certificates
+// requires) instead of being thrown away. Anything else under /usr is still
+// dropped: there is no general rule for where an arbitrary /usr file
+// belongs on an immutable OS, and halting the boot is the worse outcome.
 func dropUsrFiles(configSpec *yaml.Node) {
 	files := mapValueNode(configSpec, "files")
 	if files == nil || files.Kind != yaml.SequenceNode {
@@ -130,12 +146,38 @@ func dropUsrFiles(configSpec *yaml.Node) {
 	for _, f := range files.Content {
 		if f.Kind == yaml.MappingNode {
 			if p := mapValueNode(f, "path"); p != nil && strings.HasPrefix(p.Value, "/usr") {
+				if rehomed, ok := flatcarTrustAnchorPath(p.Value); ok {
+					p.Value = rehomed
+					p.Tag = "!!str"
+					kept = append(kept, f)
+				}
 				continue
 			}
 		}
 		kept = append(kept, f)
 	}
 	files.Content = kept
+}
+
+// flatcarTrustAnchorPath maps a CA certificate under the cloud-init trust
+// directory to Flatcar's writable equivalent, reporting false for any other
+// /usr path. update-ca-certificates only picks up *.pem here, so a .crt
+// source name is renamed rather than copied verbatim — getting that wrong
+// fails silently: the file exists, the bundle never includes it.
+func flatcarTrustAnchorPath(path string) (string, bool) {
+	const cloudInitTrustDir = "/usr/local/share/ca-certificates/"
+	if !strings.HasPrefix(path, cloudInitTrustDir) {
+		return "", false
+	}
+	base := strings.TrimPrefix(path, cloudInitTrustDir)
+	if base == "" || strings.Contains(base, "/") {
+		return "", false
+	}
+	base = strings.TrimSuffix(base, ".crt")
+	if !strings.HasSuffix(base, ".pem") {
+		base += ".pem"
+	}
+	return flatcarTrustAnchorDir + "/" + base, true
 }
 
 // infraMachineSpec returns the mapping at spec.template.spec for a

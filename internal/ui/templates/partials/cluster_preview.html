@@ -27,6 +27,18 @@
     Anything committed there is applied automatically — PVEKube only reads the repo, it never commits to it.
   </p>
   {{end}}
+  {{if .PrivateDNSDomains}}
+  <p class="text-xs text-slate-500">
+    <i class="fa fa-sitemap mr-1"></i>CoreDNS will resolve <code class="text-slate-300">{{.PrivateDNSDomains}}</code>
+    via <code class="text-slate-300">{{.PrivateDNSServers}}</code> only, instead of the random-upstream catch-all.
+  </p>
+  {{end}}
+  {{if .InternalCACert}}
+  <p class="text-xs text-slate-500">
+    <i class="fa fa-certificate mr-1"></i>Internal CA goes into every node's OS trust store (in the manifest above) and is
+    published as the <code class="text-slate-300">pvekube-internal-ca</code> ConfigMap in every namespace so pods can mount it.
+  </p>
+  {{end}}
   {{if .OIDCEnabled}}
   <p class="text-xs text-slate-500">
     <i class="fa fa-key mr-1"></i>API server will authenticate via OIDC — issuer <code class="text-slate-300">{{.OIDCIssuerURL}}</code>, client ID <code class="text-slate-300">{{.OIDCClientID}}</code>.
@@ -83,6 +95,9 @@
     <input type="hidden" name="gitops_username" value="{{.GitOpsUsername}}">
     <input type="hidden" name="gitops_token" value="{{.GitOpsToken}}">
     <textarea name="gitops_ca_cert" class="hidden">{{.GitOpsCACert}}</textarea>{{end}}
+    {{if .PrivateDNSDomains}}<input type="hidden" name="private_dns_domains" value="{{.PrivateDNSDomains}}">
+    <input type="hidden" name="private_dns_servers" value="{{.PrivateDNSServers}}">{{end}}
+    {{if .InternalCACert}}<textarea name="internal_ca_cert" class="hidden">{{.InternalCACert}}</textarea>{{end}}
     <textarea name="manifest_yaml" class="hidden">{{.YAML}}</textarea>
     <button type="submit" data-loading-text="Launching cluster..." class="rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700">
       <i class="fa fa-rocket mr-1.5"></i>Apply — launch this cluster
