@@ -547,9 +547,13 @@ const buildVMMemoryMiB = 4096
 // the Proxmox client (rather than left to Packer's default of "next free
 // ID at boot time") so PVEKube knows deterministically which VM/template
 // the result is, instead of parsing it back out of Packer's log output.
-func BuildSpec(dataDir string, flavor OSFlavor, kv KubernetesVersion, vmid int, env ConnEnv) *jobs.Spec {
+//
+// onCleaned, if non-nil, is called with the job ID once the build's leftovers
+// (container and VM) are confirmed gone after an aborted or failed build, so
+// the caller can stop offering a manual clean-up for that job.
+func BuildSpec(dataDir string, flavor OSFlavor, kv KubernetesVersion, vmid int, env ConnEnv, onCleaned func(jobID int64)) *jobs.Spec {
 	var isoFile string
-	container := fmt.Sprintf("pvekube-build-%d", vmid)
+	container := BuildContainerName(vmid)
 	title := "Build " + flavor.Label + " template (VMID " + fmt.Sprint(vmid) + ")"
 	if kv.Requested() {
 		title += " for Kubernetes " + kv.Semver
@@ -608,41 +612,85 @@ func BuildSpec(dataDir string, flavor OSFlavor, kv KubernetesVersion, vmid int, 
 			defer cancel()
 			err := runner.Run(ctx, c, "", nil, "docker", args...)
 
-			// Reaped on ANY early exit, not just the timeout: an operator
-			// pressing Cancel cancels this context too, and runner.Run then
-			// kills the local `docker run` client — which detaches from the
-			// container rather than stopping it. Handling only the timeout
-			// left a cancelled build's Packer running indefinitely, still
-			// holding its build VM, with its name blocking the next attempt.
-			if ctx.Err() != nil {
-				reapContainer(c, container, "the build was interrupted")
+			// Cleaned up on ANY failed or interrupted run, not just the
+			// timeout: an operator pressing Cancel cancels this context too,
+			// and runner.Run then kills the local `docker run` client — which
+			// detaches from the container rather than stopping it. Handling
+			// only the timeout left a cancelled build's Packer running
+			// indefinitely, still holding its build VM, with its name
+			// blocking the next attempt.
+			//
+			// The VM is checked and removed here as well. Packer normally
+			// deletes it itself when it receives SIGTERM, but a build wedged
+			// at the installer screen (the guest never gets an address, so
+			// Packer waits for SSH for up to two hours) is exactly the case
+			// where an operator cancels, and "normally" is not a guarantee
+			// worth leaving a stranded VM — and a recycled VMID — behind.
+			if err != nil || ctx.Err() != nil {
+				if cleanupErr := CleanupBuild(c.Logf, env, vmid); cleanupErr != nil {
+					c.Logf("Automatic clean-up did not finish: %v — use \"Clean up\" on the Templates page once the cause is fixed.", cleanupErr)
+				} else if onCleaned != nil {
+					onCleaned(c.JobID)
+				}
 			}
 
 			if ctx.Err() == context.DeadlineExceeded {
-				// By this point runner.Run has already tried the graceful
-				// path: it sends SIGTERM (not SIGKILL) on ctx cancellation,
-				// docker's CLI forwards that into the container, and Packer
-				// catches it to stop+delete the build VM itself before
-				// exiting — confirmed live, this is the common case and it
-				// finishes in a few seconds. `docker rm -f` here is only the
-				// fallback for when that graceful shutdown didn't finish
-				// within runner.Run's WaitDelay: killing the LOCAL `docker
-				// run` client detaches rather than stopping the container,
-				// which would otherwise keep running (and keep holding the
-				// build VM) after the job has already failed.
 				c.Logf("Build exceeded %s", BuildTimeout)
-
-				// The container's fate says nothing definitive about the
-				// Proxmox VM it created — Packer may have gotten far enough
-				// to delete the container but not the VM, or vice versa. Only
-				// asserting cleanup status after checking Proxmox directly is
-				// what fixed a real false report: this exact path once
-				// logged "VM was left behind and needs deleting by hand" for
-				// a VM Packer's own graceful shutdown had already deleted.
-				return reportBuildTimeout(c, env, vmid)
+				return fmt.Errorf("template build exceeded %s and was aborted", BuildTimeout)
 			}
 			return err
 		})
+}
+
+// BuildContainerName is the Docker container a build for vmid runs in.
+func BuildContainerName(vmid int) string { return fmt.Sprintf("pvekube-build-%d", vmid) }
+
+// CleanupBuild removes what a template build leaves behind when it does not
+// finish cleanly: the Packer container and the build VM on Proxmox. It is
+// idempotent — nothing to remove is success — and used both automatically
+// when a build is cancelled/fails and by the manual "Clean up" action.
+//
+// The VM is only destroyed if it is not a template. A build converts its VM
+// to a template as the very last thing it does, so a template under this
+// VMID is the build's finished output (for example when only the later
+// "Record template" step failed) and not debris.
+//
+// Everything runs on its own context: by the time this matters the job's
+// context is already cancelled, and a cleanup that cancels itself is no
+// cleanup at all.
+func CleanupBuild(logf func(string, ...any), env ConnEnv, vmid int) error {
+	reapContainerTo(logf, BuildContainerName(vmid), "build clean-up")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	client := env.proxmoxClient()
+
+	st, err := client.GetVMState(ctx, env.Node, vmid)
+	if err != nil {
+		return fmt.Errorf("checking Proxmox VM %d on %s: %w", vmid, env.Node, err)
+	}
+	switch {
+	case !st.Exists:
+		logf("Proxmox VM %d no longer exists on %s — nothing to remove.", vmid, env.Node)
+		return nil
+	case st.Template:
+		logf("Proxmox VM %d on %s is a finished template, not a leftover build VM — left in place.", vmid, env.Node)
+		return nil
+	}
+
+	logf("Removing leftover build VM %d (%s) on %s…", vmid, st.Name, env.Node)
+	if err := client.DestroyVM(ctx, env.Node, vmid, st.Running); err != nil {
+		return fmt.Errorf("deleting VM %d: %w", vmid, err)
+	}
+	// Confirm against Proxmox instead of trusting the task result alone, so
+	// "cleaned up" is never reported for a VM that is still there.
+	if still, err := client.VMExists(ctx, env.Node, vmid); err != nil {
+		return fmt.Errorf("confirming VM %d was removed: %w", vmid, err)
+	} else if still {
+		return fmt.Errorf("VM %d is still present after deletion", vmid)
+	}
+	logf("Removed Proxmox VM %d.", vmid)
+	return nil
 }
 
 // reapContainer force-removes a build container, best effort.
@@ -652,39 +700,17 @@ func BuildSpec(dataDir string, flavor OSFlavor, kv KubernetesVersion, vmid int, 
 // cleanup at all. A "no such container" failure is the normal case and not
 // worth reporting — it just means there was nothing to remove, or Packer's
 // own graceful shutdown got there first.
-func reapContainer(c *jobs.Ctx, name, why string) {
+func reapContainer(c *jobs.Ctx, name, why string) { reapContainerTo(c.Logf, name, why) }
+
+func reapContainerTo(logf func(string, ...any), name, why string) {
 	out, err := exec.Command("docker", "rm", "-f", name).CombinedOutput()
 	if err != nil {
 		if !strings.Contains(string(out), "No such container") {
-			c.Logf("Could not remove container %s (%s): %v — %s", name, why, err, strings.TrimSpace(string(out)))
+			logf("Could not remove container %s (%s): %v — %s", name, why, err, strings.TrimSpace(string(out)))
 		}
 		return
 	}
-	c.Logf("Removed container %s (%s)", name, why)
-}
-
-// reportBuildTimeout checks Proxmox directly for whether the build VM
-// actually still exists before deciding what to tell the operator, rather
-// than assuming either outcome. Three distinct cases, three distinct
-// messages: confirmed gone (nothing to do), confirmed still there (name the
-// exact VMID to delete), or unknown (the check itself failed — say so rather
-// than guessing, since a network hiccup here must never be reported as
-// either a successful or a failed cleanup).
-func reportBuildTimeout(c *jobs.Ctx, env ConnEnv, vmid int) error {
-	client := proxmox.New(proxmox.Config{URL: env.URL, TokenID: env.TokenID, Secret: env.Secret, InsecureSkipVerify: env.InsecureTLS})
-	checkCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	exists, err := client.VMExists(checkCtx, env.Node, vmid)
-	switch {
-	case err != nil:
-		c.Logf("Could not confirm whether Proxmox VM %d still exists: %v — check node %s by hand.", vmid, err, env.Node)
-	case exists:
-		c.Logf("Proxmox VM %d is still present on node %s and needs deleting by hand before retrying.", vmid, env.Node)
-	default:
-		c.Logf("Confirmed: Proxmox VM %d no longer exists — Packer's own cleanup already removed it, nothing further to do.", vmid)
-	}
-	return fmt.Errorf("template build exceeded %s and was aborted", BuildTimeout)
+	logf("Removed container %s (%s)", name, why)
 }
 
 // diskFormatOrDefault falls back to image-builder's own Packer template

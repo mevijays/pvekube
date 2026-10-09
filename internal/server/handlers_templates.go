@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -47,6 +48,12 @@ func (s *Server) handleTemplatesPanel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) renderTemplatesPanel(w http.ResponseWriter, ctx context.Context, session string, conn *storedConnection, errMsg string) {
+	s.renderTemplatesPanelWith(w, ctx, session, conn, errMsg, "")
+}
+
+// renderTemplatesPanelWith is renderTemplatesPanel plus a success notice,
+// shown above the form (used by the clean-up action to say what it removed).
+func (s *Server) renderTemplatesPanelWith(w http.ResponseWriter, ctx context.Context, session string, conn *storedConnection, errMsg, notice string) {
 	conns, connErr := s.listConnections()
 	if connErr != nil {
 		conns = nil
@@ -108,15 +115,21 @@ func (s *Server) renderTemplatesPanel(w http.ResponseWriter, ctx context.Context
 	}
 
 	buildBusy, _ := s.templateBuildInProgress()
+	leftovers, lerr := s.buildLeftovers(conn.ID)
+	if lerr != nil {
+		slog.Warn("templates: cannot list leftover builds", "conn", conn.ID, "err", lerr)
+	}
 
 	ui.RenderPartial(w, "templates_panel", map[string]any{
-		"Error":    errMsg,
-		"CSRF":     s.csrfFor(session),
-		"Flavors":  imagebuilder.Flavors,
-		"Snapshot": snap,
-		"Built":    built,
-		"LinuxOK":  runtime.GOOS == "linux",
-		"HostOS":   runtime.GOOS,
+		"Error":     errMsg,
+		"Notice":    notice,
+		"Leftovers": leftovers,
+		"CSRF":      s.csrfFor(session),
+		"Flavors":   imagebuilder.Flavors,
+		"Snapshot":  snap,
+		"Built":     built,
+		"LinuxOK":   runtime.GOOS == "linux",
+		"HostOS":    runtime.GOOS,
 		// Connections + SelectedConn back the host <select> at the top of
 		// the panel; every built-template row and every dropdown below it
 		// (node/bridge/storage) is scoped to SelectedConn only — there is
@@ -353,7 +366,10 @@ func (s *Server) handleTemplatesBuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	spec := imagebuilder.BuildSpec(s.dataDir, input.flavor, kv, vmid, input.env)
+	// A build that is cancelled or fails cleans up after itself; this records
+	// that it did, so the Templates page does not keep offering a manual
+	// clean-up for a job that has nothing left to remove.
+	spec := imagebuilder.BuildSpec(s.dataDir, input.flavor, kv, vmid, input.env, s.markBuildCleaned)
 	connID, node, flavorID, dataDir := conn.ID, input.env.Node, input.flavor.ID, s.dataDir
 	// The RESOLVED semver, not the raw form input: what gets recorded has to
 	// be what the image will actually contain, because cluster creation and
@@ -384,7 +400,10 @@ func (s *Server) handleTemplatesBuild(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 
-	jobID, err := s.jobs.Start(spec, `{"kind":"build","vmid":`+strconv.Itoa(vmid)+`}`)
+	// conn and node are recorded so a manual clean-up can find the build VM
+	// later, including after a restart when nothing else remembers them.
+	params, _ := json.Marshal(buildJobParams{Kind: "build", VMID: vmid, Conn: conn.ID, Node: node})
+	jobID, err := s.jobs.Start(spec, string(params))
 	if err != nil {
 		s.renderTemplatesPanel(w, r.Context(), session, conn, "starting job: "+err.Error())
 		return
@@ -392,6 +411,10 @@ func (s *Server) handleTemplatesBuild(w http.ResponseWriter, r *http.Request) {
 	ui.RenderPartial(w, "job_progress", map[string]any{
 		"JobID": jobID, "Title": spec.Title,
 		"WrapperID": "templates-panel", "ReloadURL": "/templates/panel", "ReloadTarget": "#templates-panel",
+		// A build can legitimately be silent for a long time (Packer waiting
+		// for the build VM to come up), so say what to do when it is silent
+		// for too long to be normal.
+		"StallHint": "No output for a while. Waiting for the build VM can be silent for ~15 minutes, but much longer usually means the VM is stuck on an installer screen — check its console in Proxmox. Cancel stops the build and removes the build VM and container.",
 	})
 }
 

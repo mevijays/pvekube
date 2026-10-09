@@ -314,6 +314,106 @@ func TestPartialsRenderWithHandlerData(t *testing.T) {
 			mustContain: []string{"already running", "disabled"},
 		},
 		{
+			// The clean-up card must post the job, the connection and the CSRF
+			// token together — the handler rejects a request missing any.
+			name:    "templates_panel/leftover-builds",
+			partial: "templates_panel",
+			data: map[string]any{
+				"CSRF": "csrf-token-here", "Flavors": []struct{ ID, Label string }{},
+				"Snapshot":     map[string]any{},
+				"Connections":  []connStub{{ID: 1, URL: "https://172.16.1.101:8006", IsPrimary: true}},
+				"SelectedConn": connStub{ID: 1, URL: "https://172.16.1.101:8006", IsPrimary: true},
+				"Notice":       "Cleaned up build job 40",
+				"Leftovers": []struct {
+					JobID               int64
+					Title, Status       string
+					VMID                int
+					Node, Ended, Reason string
+				}{{JobID: 55, Title: "Build", Status: "failed", VMID: 100, Node: "pve2", Ended: "2026-10-04 15:27:12", Reason: "docker failed"}},
+			},
+			mustContain: []string{
+				"Unfinished builds to clean up", `/templates/cleanup`, "csrf-token-here", `"job": "55"`,
+				"VMID 100 on pve2", "Cleaned up build job 40",
+			},
+			mustNotContain: []string{"<no value>"},
+		},
+		{
+			name:    "templates_panel/no-leftovers",
+			partial: "templates_panel",
+			data: map[string]any{
+				"CSRF": "csrf-token-here", "Flavors": []struct{ ID, Label string }{},
+				"Snapshot":     map[string]any{},
+				"Connections":  []connStub{{ID: 1, URL: "https://172.16.1.101:8006", IsPrimary: true}},
+				"SelectedConn": connStub{ID: 1, URL: "https://172.16.1.101:8006", IsPrimary: true},
+			},
+			mustNotContain: []string{"Unfinished builds", "/templates/cleanup"},
+		},
+		{
+			name:        "job_progress/stall-hint",
+			partial:     "job_progress",
+			data:        map[string]any{"JobID": int64(7), "Title": "Build", "StallHint": "check the VM console"},
+			mustContain: []string{`id="job-stall-7"`, "check the VM console"},
+		},
+		{
+			name:           "job_progress/no-stall-hint",
+			partial:        "job_progress",
+			data:           map[string]any{"JobID": int64(8), "Title": "Apply"},
+			mustNotContain: []string{`id="job-stall-8"`},
+		},
+		{
+			// The worker override must survive preview -> apply as hidden
+			// fields (parseClusterForm runs again on apply), and the summary
+			// must show what workers will actually get.
+			name:    "cluster_preview/worker-sizing",
+			partial: "cluster_preview",
+			data: map[string]any{
+				"ClusterName": "demo", "TemplateID": int64(1), "YAML": "apiVersion: v1",
+				"CSRF": "csrf-token-here", "ControlPlaneCount": 1, "WorkerCount": 3,
+				"NumSockets": 1, "NumCores": 2, "MemoryMiB": 4096, "BootVolumeSize": 100,
+				"WorkerNumCores": 8, "WorkerMemoryMiB": 16384, "WorkerSized": true,
+				"WorkerEffSockets": 1, "WorkerEffCores": 8, "WorkerEffMemoryMiB": 16384, "WorkerEffBootVolumeGB": 100,
+			},
+			mustContain: []string{
+				`name="worker_num_cores" value="8"`, `name="worker_memory_mib" value="16384"`,
+				"1 socket(s) × 8 cores, 16384 MiB, 100 GB disk",
+			},
+			mustNotContain: []string{`name="worker_num_sockets"`, `name="worker_boot_volume_size"`},
+		},
+		{
+			name:    "cluster_preview/workers-same-size",
+			partial: "cluster_preview",
+			data: map[string]any{
+				"ClusterName": "demo", "TemplateID": int64(1), "YAML": "apiVersion: v1",
+				"CSRF": "csrf-token-here", "ControlPlaneCount": 1, "WorkerCount": 3,
+				"NumSockets": 1, "NumCores": 2, "MemoryMiB": 4096, "BootVolumeSize": 100,
+			},
+			mustContain:    []string{"same size as the control plane"},
+			mustNotContain: []string{`name="worker_num_cores"`},
+		},
+		{
+			name:    "kubeconfig_report/errors-block-download",
+			partial: "kubeconfig_report",
+			data: map[string]any{"Report": kcReport{
+				Errors: 1, Warnings: 1,
+				Global: []kcFinding{{Level: "error", Msg: `cluster "kubernetes" is defined in both a.yaml and b.yaml`}},
+				Files:  []kcFile{{Name: "a.yaml", Status: "warning", Clusters: 1, Users: 1, Contexts: 1, Findings: []kcFinding{{Level: "warning", Msg: "user \"u\" has no credentials"}}}},
+			}},
+			mustContain:    []string{"1 error must be fixed", "defined in both a.yaml and b.yaml", "a.yaml", "1 cluster · 1 user · 1 context", "has no credentials"},
+			mustNotContain: []string{"data-kc-download", "Current context"},
+		},
+		{
+			name:    "kubeconfig_report/ready",
+			partial: "kubeconfig_report",
+			data: map[string]any{"Report": kcReport{
+				CanDownload: true, Warnings: 2, CurrentContext: "b@b",
+				Contexts:     []kcContext{{Name: "a@a", Server: "https://1:6443", Auth: "token", Source: "a.yaml"}, {Name: "b@b", Server: "https://2:6443", Auth: "client certificate", Source: "b.yaml"}},
+				ContextNames: []string{"a@a", "b@b"},
+				Files:        []kcFile{{Name: "a.yaml", Status: "ok"}},
+			}},
+			mustContain:    []string{"Validation passed", "2 contexts ready", "2 warnings", "data-kc-download", `name="current_context"`, `value="b@b" selected`, "https://2:6443", "client certificate"},
+			mustNotContain: []string{"must be fixed"},
+		},
+		{
 			name:    "proxmox_detail_error/ok",
 			partial: "proxmox_detail_error",
 			data: map[string]any{
@@ -523,4 +623,25 @@ func TestPagesExecute(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Local stand-ins with the same field names as kubeconfig.Report and friends:
+// the templates only read fields by name, and this keeps the ui tests free of a
+// dependency on the kubeconfig package.
+type kcFinding struct{ Level, File, Msg string }
+type kcFile struct {
+	Name, Status              string
+	Clusters, Users, Contexts int
+	Findings                  []kcFinding
+}
+type kcContext struct{ Name, Cluster, Server, User, Auth, Source string }
+type kcReport struct {
+	Files          []kcFile
+	Global         []kcFinding
+	Contexts       []kcContext
+	ContextNames   []string
+	CurrentContext string
+	Errors         int
+	Warnings       int
+	CanDownload    bool
 }

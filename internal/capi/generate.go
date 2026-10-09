@@ -75,6 +75,11 @@ type GenerateInput struct {
 	NumCores         int    // defaults to 4 if 0
 	MemoryMiB        int    // defaults to 8048 if 0
 
+	// Worker, if set, gives the worker nodes a different size than the
+	// fields above (which then describe the control plane). Zero fields
+	// inherit the control plane's value. See InjectWorkerSizing.
+	Worker WorkerSizing
+
 	// Registry, when set, has its CA and containerd config injected into
 	// every machine template — see InjectRegistryTrust. Zero value means no
 	// registry and leaves the manifest untouched.
@@ -109,27 +114,34 @@ type GenerateInput struct {
 	ConnectionID int64
 }
 
-func (in GenerateInput) env() []string {
-	bootDevice := in.BootVolumeDevice
+// effectiveSizing resolves the control-plane machine size and boot device,
+// applying the defaults for anything left at zero. It is the single source of
+// truth for both the clusterctl variables (env) and InjectMachineSizing, so
+// the two can never disagree about what size a node is.
+func (in GenerateInput) effectiveSizing() (cp MachineSizing, bootDevice string) {
+	bootDevice = in.BootVolumeDevice
 	if bootDevice == "" {
 		bootDevice = "scsi0"
 	}
-	bootSize := in.BootVolumeSizeGB
-	if bootSize == 0 {
-		bootSize = 100
+	cp = MachineSizing{NumSockets: in.NumSockets, NumCores: in.NumCores, MemoryMiB: in.MemoryMiB, BootVolumeSizeGB: in.BootVolumeSizeGB}
+	if cp.BootVolumeSizeGB == 0 {
+		cp.BootVolumeSizeGB = 100
 	}
-	sockets := in.NumSockets
-	if sockets == 0 {
-		sockets = 2
+	if cp.NumSockets == 0 {
+		cp.NumSockets = 2
 	}
-	cores := in.NumCores
-	if cores == 0 {
-		cores = 4
+	if cp.NumCores == 0 {
+		cp.NumCores = 4
 	}
-	mem := in.MemoryMiB
-	if mem == 0 {
-		mem = 8048
+	if cp.MemoryMiB == 0 {
+		cp.MemoryMiB = 8048
 	}
+	return cp, bootDevice
+}
+
+func (in GenerateInput) env() []string {
+	size, bootDevice := in.effectiveSizing()
+	bootSize, sockets, cores, mem := size.BootVolumeSizeGB, size.NumSockets, size.NumCores, size.MemoryMiB
 
 	return []string{
 		"PROXMOX_URL=" + in.ProxmoxURL,
@@ -212,10 +224,22 @@ func Generate(ctx context.Context, dataDir, binDir string, in GenerateInput) (st
 	// We use regex to remove any format: qcow2 or format: "qcow2" lines.
 	manifest = regexp.MustCompile(`(?m)^\s*format:\s*"?qcow2"?\s*$`).ReplaceAllString(manifest, "")
 
+	// Write the sizes into the machine templates explicitly. Two reasons, both
+	// seen in the field: control plane and workers can differ but clusterctl
+	// has only one set of size variables, and some flavors (cilium) have no
+	// size or disk fields on their machine templates at all, so the variables
+	// are silently dropped and every VM comes out the size of the source
+	// template.
+	cpSize, bootDevice := in.effectiveSizing()
+	manifest, err := InjectMachineSizing(manifest, cpSize, in.Worker, bootDevice)
+	if err != nil {
+		return "", err
+	}
+
 	// Internal registry trust has to be baked into the machine templates,
 	// not applied afterwards — containerd needs the CA before kubeadm pulls
 	// its first image. No-op (and byte-identical output) when unset.
-	manifest, err := InjectRegistryTrust(manifest, in.Registry)
+	manifest, err = InjectRegistryTrust(manifest, in.Registry)
 	if err != nil {
 		return "", err
 	}

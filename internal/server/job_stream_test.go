@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -119,5 +120,75 @@ func TestJobStreamReplaySurvivesNullLogPath(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("stream is missing %q\n--- got ---\n%s", want, body)
 		}
+	}
+}
+
+// A buffering reverse proxy holds SSE events until its buffer fills, which
+// looks like a job that prints nothing for minutes. The stream has to opt out
+// and flush a padded preamble so the first chunk always gets through.
+func TestJobStreamDisablesProxyBuffering(t *testing.T) {
+	db := migratedDB(t)
+	if _, err := db.Exec(`INSERT INTO jobs (id, kind, title, status) VALUES (1, 'x', 'x', 'succeeded')`); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{db: db, jobs: jobs.NewEngine(db, t.TempDir(), nil)}
+	req := httptest.NewRequest("GET", "/jobs/1/stream", nil)
+	req.SetPathValue("id", "1")
+	rec := httptest.NewRecorder()
+	s.handleJobStream(rec, req)
+
+	if got := rec.Header().Get("X-Accel-Buffering"); got != "no" {
+		t.Errorf("X-Accel-Buffering = %q, want no", got)
+	}
+	if got := rec.Header().Get("Cache-Control"); !strings.Contains(got, "no-transform") {
+		t.Errorf("Cache-Control = %q, want no-transform", got)
+	}
+	body := rec.Body.String()
+	if i := strings.Index(body, "data: connected"); i < 4096 {
+		t.Errorf("preamble padding missing: \"connected\" at byte %d", i)
+	}
+}
+
+func TestBuildLeftoversListsOnlyUncleanedBuildsThatReachedPacker(t *testing.T) {
+	db := migratedDB(t)
+	params := func(vmid int, conn int, node string) string {
+		return `{"kind":"build","vmid":` + strconv.Itoa(vmid) + `,"conn":` + strconv.Itoa(conn) + `,"node":"` + node + `"}`
+	}
+	add := func(id int, status, p, buildStepStarted string, cleaned bool) {
+		t.Helper()
+		var cleanedAt any
+		if cleaned {
+			cleanedAt = "2026-10-04 15:00:00"
+		}
+		if _, err := db.Exec(`INSERT INTO jobs (id, kind, title, status, params_json, cleaned_at) VALUES (?, 'template.build', 'b', ?, ?, ?)`, id, status, p, cleanedAt); err != nil {
+			t.Fatal(err)
+		}
+		var started any
+		if buildStepStarted != "" {
+			started = buildStepStarted
+		}
+		if _, err := db.Exec(`INSERT INTO job_steps (job_id, seq, title, status, started_at) VALUES (?, 4, 'packer build (20-35 minutes)', ?, ?)`, id, status, started); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add(1, "failed", params(100, 1, "pve2"), "2026-10-04 14:00:00", false)        // listed
+	add(2, "cancelled", params(101, 1, "pve2"), "2026-10-04 14:00:00", false)     // listed
+	add(3, "failed", params(102, 1, "pve2"), "", false)                           // Packer never started: no VM
+	add(4, "failed", params(103, 1, "pve2"), "2026-10-04 14:00:00", true)         // already cleaned
+	add(5, "failed", params(104, 2, "pve2"), "2026-10-04 14:00:00", false)        // other host
+	add(6, "failed", `{"kind":"build","vmid":105}`, "2026-10-04 14:00:00", false) // legacy params: node unknown
+	add(7, "running", params(106, 1, "pve2"), "2026-10-04 14:00:00", false)       // still running
+
+	s := &Server{db: db}
+	got, err := s.buildLeftovers(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []int64
+	for _, v := range got {
+		ids = append(ids, v.JobID)
+	}
+	if len(ids) != 2 || ids[0] != 2 || ids[1] != 1 {
+		t.Errorf("leftover jobs = %v, want [2 1]", ids)
 	}
 }

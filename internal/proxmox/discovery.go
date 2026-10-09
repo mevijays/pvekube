@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 )
@@ -298,6 +299,67 @@ func (c *Client) VMExists(ctx context.Context, node string, vmid int) (bool, err
 func (c *Client) DeleteVM(ctx context.Context, node string, vmid int) error {
 	var upid string
 	if err := c.do(ctx, http.MethodDelete, fmt.Sprintf("/nodes/%s/qemu/%d", node, vmid), nil, &upid); err != nil {
+		return err
+	}
+	return c.WaitTask(ctx, node, upid, nil)
+}
+
+// VMState is what a VMID currently is on a node.
+type VMState struct {
+	Exists   bool
+	Running  bool
+	Template bool
+	Name     string
+}
+
+// GetVMState reports whether a VMID exists and, if so, whether it is running
+// and whether it is a finished template. Template matters to the
+// build-cleanup path: a build VM is throwaway, but a VM already converted to
+// a template is the build's output and must never be destroyed as "leftover".
+func (c *Client) GetVMState(ctx context.Context, node string, vmid int) (VMState, error) {
+	exists, err := c.VMExists(ctx, node, vmid)
+	if err != nil || !exists {
+		return VMState{}, err
+	}
+	st := VMState{Exists: true}
+	var status map[string]any
+	if err := c.do(ctx, http.MethodGet, fmt.Sprintf("/nodes/%s/qemu/%d/status/current", node, vmid), nil, &status); err != nil {
+		return VMState{}, err
+	}
+	st.Running = fmt.Sprint(status["status"]) == "running"
+	st.Name, _ = status["name"].(string)
+
+	var cfg map[string]any
+	if err := c.do(ctx, http.MethodGet, fmt.Sprintf("/nodes/%s/qemu/%d/config", node, vmid), nil, &cfg); err != nil {
+		return VMState{}, err
+	}
+	// Proxmox reports this as 1 (number) or "1" depending on version.
+	st.Template = fmt.Sprint(cfg["template"]) == "1"
+	return st, nil
+}
+
+// StopVM hard-stops a VM (no guest cooperation — a hung installer will never
+// answer an ACPI shutdown) and waits for the task to finish.
+func (c *Client) StopVM(ctx context.Context, node string, vmid int) error {
+	var upid string
+	if err := c.post(ctx, fmt.Sprintf("/nodes/%s/qemu/%d/status/stop", node, vmid), url.Values{}, &upid); err != nil {
+		return err
+	}
+	return c.WaitTask(ctx, node, upid, nil)
+}
+
+// DestroyVM removes a VM completely: stops it first if it is running (Proxmox
+// refuses to delete a running VM) and purges its disks and job references so
+// nothing is left behind on storage.
+func (c *Client) DestroyVM(ctx context.Context, node string, vmid int, running bool) error {
+	if running {
+		if err := c.StopVM(ctx, node, vmid); err != nil {
+			return fmt.Errorf("stopping VM %d: %w", vmid, err)
+		}
+	}
+	var upid string
+	path := fmt.Sprintf("/nodes/%s/qemu/%d?purge=1&destroy-unreferenced-disks=1", node, vmid)
+	if err := c.do(ctx, http.MethodDelete, path, nil, &upid); err != nil {
 		return err
 	}
 	return c.WaitTask(ctx, node, upid, nil)

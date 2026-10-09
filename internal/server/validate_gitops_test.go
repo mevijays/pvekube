@@ -74,3 +74,30 @@ func TestValidateGitOpsFormRejectsBadInput(t *testing.T) {
 		})
 	}
 }
+
+// The form is pre-filled from the previous cluster's saved GitOps settings and
+// those fields are still submitted when the box is unticked. The tick has to
+// win: leftover values must neither be an error nor reach the cluster.
+func TestUntickedGitOpsIgnoresPrefilledSettings(t *testing.T) {
+	prefilled := capi.AddonSelection{
+		MetricsServer: true,
+		GitOpsRepoURL: "https://gitea.internal/org/repo.git", GitOpsBranch: "main", GitOpsPath: "./clusters/dev",
+		GitOpsUsername: "bot", GitOpsToken: "tok", GitOpsCACert: testCAPEM,
+	}
+	got := withoutUntickedGitOps(prefilled)
+	if err := validateGitOpsForm(got); err != nil {
+		t.Fatalf("unticked GitOps with saved values should validate, got: %v", err)
+	}
+	if got.GitOpsRepoURL != "" || got.GitOpsToken != "" || got.GitOpsCACert != "" || got.GitOpsUsername != "" || got.GitOpsBranch != "" || got.GitOpsPath != "" {
+		t.Errorf("GitOps settings survived an unticked box: %+v", got)
+	}
+	if !got.MetricsServer {
+		t.Error("unrelated add-ons must be left alone")
+	}
+
+	// Ticked: everything is kept, including the saved values.
+	prefilled.GitOps = true
+	if kept := withoutUntickedGitOps(prefilled); kept != prefilled {
+		t.Errorf("ticked GitOps was altered: %+v", kept)
+	}
+}

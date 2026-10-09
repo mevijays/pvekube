@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -106,13 +107,26 @@ func (s *Server) handleJobStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
+	// no-transform + X-Accel-Buffering keep a reverse proxy (nginx, and
+	// anything honouring its header) from buffering or compressing the
+	// stream. A buffering proxy holds every event until its buffer fills or
+	// the connection closes, so the log pane stays blank for minutes and then
+	// fills in a burst — the page can't tell that apart from "no output yet".
+	w.Header().Set("Cache-Control", "no-cache, no-transform")
 	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
 
 	// Subscribe BEFORE replay so we never miss a line produced in the gap.
 	ch := s.jobs.Subscribe(jobID)
 	defer s.jobs.Unsubscribe(jobID, ch)
 
+	// A comment line (ignored by EventSource) padded past common proxy
+	// buffer thresholds, so a proxy that buffers regardless of the header
+	// above still releases the first chunk — and with it the response
+	// headers — right away. "retry" shortens the reconnect delay.
+	w.Write([]byte("retry: 2000\n: " + strings.Repeat(" ", 4096) + "\n\n"))
+	// The page clears its log pane on this event: a reconnect replays the
+	// whole log from the start, which would otherwise print every line twice.
 	writeEvent(w, flusher, "connected")
 
 	// Replay persisted step state and log lines, so reconnecting — or just
@@ -165,10 +179,19 @@ func (s *Server) handleJobStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Idle heartbeat: a step such as a Packer install can print nothing for
+	// minutes, and proxies drop connections that stay silent (nginx's
+	// proxy_read_timeout defaults to 60s). The resulting reconnect is
+	// harmless but visible, so keep bytes flowing.
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
 	for {
 		select {
 		case <-r.Context().Done():
 			return
+		case <-heartbeat.C:
+			w.Write([]byte(": keepalive\n\n"))
+			flusher.Flush()
 		case line, ok := <-ch:
 			if !ok {
 				return

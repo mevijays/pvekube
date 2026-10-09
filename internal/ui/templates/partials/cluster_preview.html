@@ -9,6 +9,10 @@
     <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Manifest preview — {{.ClusterName}}</h3>
     <pre class="max-h-96 overflow-auto rounded-lg border border-slate-800 bg-black/40 p-3 font-mono text-xs text-slate-300">{{.YAML}}</pre>
   </div>
+  <p class="text-xs text-slate-500">
+    <i class="fa fa-server mr-1"></i>Control plane ×{{.ControlPlaneCount}}: <code class="text-slate-300">{{.NumSockets}} socket(s) × {{.NumCores}} cores, {{.MemoryMiB}} MiB, {{.BootVolumeSize}} GB disk</code>.
+    Workers ×{{.WorkerCount}}: {{if .WorkerSized}}<code class="text-slate-300">{{.WorkerEffSockets}} socket(s) × {{.WorkerEffCores}} cores, {{.WorkerEffMemoryMiB}} MiB, {{.WorkerEffBootVolumeGB}} GB disk</code> (their own machine template in the manifest above){{else}}same size as the control plane{{end}}.
+  </p>
   {{if or .InstallMetricsServer .InstallIstio .InstallMetalLB}}
   <p class="text-xs text-slate-500">
     <i class="fa fa-puzzle-piece mr-1"></i>Will also install after apply:
@@ -65,6 +69,10 @@
     <input type="hidden" name="num_cores" value="{{.NumCores}}">
     <input type="hidden" name="memory_mib" value="{{.MemoryMiB}}">
     <input type="hidden" name="boot_volume_size" value="{{.BootVolumeSize}}">
+    {{if .WorkerNumSockets}}<input type="hidden" name="worker_num_sockets" value="{{.WorkerNumSockets}}">{{end}}
+    {{if .WorkerNumCores}}<input type="hidden" name="worker_num_cores" value="{{.WorkerNumCores}}">{{end}}
+    {{if .WorkerMemoryMiB}}<input type="hidden" name="worker_memory_mib" value="{{.WorkerMemoryMiB}}">{{end}}
+    {{if .WorkerBootVolumeSize}}<input type="hidden" name="worker_boot_volume_size" value="{{.WorkerBootVolumeSize}}">{{end}}
     <input type="hidden" name="gateway" value="{{.Gateway}}">
     <input type="hidden" name="ip_prefix" value="{{.IPPrefix}}">
     <input type="hidden" name="control_plane_endpoint_ip" value="{{.ControlPlaneEndpoint}}">

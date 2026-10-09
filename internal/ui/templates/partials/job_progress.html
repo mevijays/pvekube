@@ -5,7 +5,8 @@
        .WrapperID    - id of the outer div, so hx-swap can target it (defaults to "checklist" if empty)
        .ReloadURL    - GET endpoint to fetch once the job finishes
        .ReloadTarget - CSS id (with #) that reload's response replaces (outerHTML)
-       .IsDeleteJob  - if true, navigate to /clusters on success instead of reloading */}}
+       .IsDeleteJob  - if true, navigate to /clusters on success instead of reloading
+       .StallHint    - optional; shown under the log if a running job prints nothing for 5 minutes */}}
 {{define "job_progress"}}
 {{$wrapper := .WrapperID}}{{if not $wrapper}}{{$wrapper = "checklist"}}{{end}}
 <div id="{{$wrapper}}" class="space-y-3">
@@ -19,6 +20,11 @@
     <div id="job-steps-{{.JobID}}" class="mb-3 space-y-1"></div>
 
     <pre id="job-log-{{.JobID}}" class="max-h-96 overflow-y-auto rounded-lg bg-black/50 p-3 font-mono text-xs text-slate-300 leading-relaxed"></pre>
+    {{if .StallHint}}
+    <div id="job-stall-{{.JobID}}" class="mt-3 hidden items-start gap-2 rounded-lg border border-amber-900 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
+      <i class="fa fa-clock-o mt-0.5"></i><span>{{.StallHint}}</span>
+    </div>
+    {{end}}
     <div id="job-status-{{.JobID}}" class="mt-3 hidden text-sm font-medium"></div>
   </div>
   <div id="job-running-buttons-{{.JobID}}" class="flex gap-2">
@@ -53,6 +59,25 @@
   var stepsEl = document.getElementById('job-steps-' + jobId);
   var stepEls = {}; // stepIdx -> div element
 
+  // Stall notice: a running job that has printed nothing for STALL_MS gets
+  // the page's hint (if it has one). Cleared again by the next line, and
+  // never shown once the job is over.
+  var STALL_MS = 5 * 60 * 1000;
+  var stallEl = document.getElementById('job-stall-' + jobId);
+  var stallTimer = null;
+  function armStall() {
+    if (!stallEl) return;
+    clearTimeout(stallTimer);
+    stallEl.classList.add('hidden'); stallEl.classList.remove('flex');
+    stallTimer = setTimeout(function() { stallEl.classList.remove('hidden'); stallEl.classList.add('flex'); }, STALL_MS);
+  }
+  function disarmStall() {
+    if (!stallEl) return;
+    clearTimeout(stallTimer);
+    stallEl.classList.add('hidden'); stallEl.classList.remove('flex');
+  }
+  armStall();
+
   cancelBtn.addEventListener('click', function() {
     cancelBtn.disabled = true;
     cancelBtn.innerHTML = '<i class="fa fa-spinner fa-spin mr-1.5"></i>Cancelling...';
@@ -71,9 +96,30 @@
 
   var es = new EventSource('/jobs/' + jobId + '/stream');
 
+  // The server sends "connected" first on every (re)connect and then replays
+  // the whole log, so start from a clean pane each time — otherwise a
+  // reconnect (proxy idle timeout, laptop sleep) prints every line twice.
+  // If not even that arrives, say so rather than showing a silent blank
+  // card: it means something between here and the server is holding the
+  // stream back (typically a reverse proxy with response buffering on).
+  var gotAny = false;
+  var hint = setTimeout(function() {
+    if (gotAny) return;
+    pre.textContent = 'Waiting for the server’s log stream… nothing received yet.\n' +
+      'If this persists, a reverse proxy in front of PVEKube is probably buffering /jobs/*/stream ' +
+      '(nginx: proxy_buffering off).\n';
+  }, 4000);
+
   es.onmessage = function(ev) {
-    if (ev.data.indexOf('LINE:') === 0) {
+    if (!gotAny) { gotAny = true; clearTimeout(hint); pre.textContent = ''; }
+    if (ev.data === 'connected') {
+      pre.textContent = '';
+      stepsEl.innerHTML = '';
+      stepEls = {};
+
+    } else if (ev.data.indexOf('LINE:') === 0) {
       var line = ev.data.slice(5);
+      armStall();
       pre.textContent += line + "\n";
       pre.scrollTop = pre.scrollHeight;
 
@@ -101,6 +147,8 @@
       var status = ev.data.slice(4);
       if (status === 'succeeded' || status === 'failed' || status === 'cancelled' || status === 'interrupted') {
         es.close();
+        clearTimeout(hint);
+        disarmStall();
         spinner.classList.remove('fa-spin');
         runningButtons.classList.add('hidden');
         buttons.classList.remove('hidden');

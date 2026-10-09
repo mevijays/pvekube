@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -203,17 +204,20 @@ func (s *Server) listTemplates(connID int64) []templateOptionView {
 // clusterForm is the parsed, typed form payload shared by check-ip, preview,
 // and apply — one parser, three consumers, so the fields can't drift.
 type clusterForm struct {
-	name                 string
-	templateID           int64
-	template             templateOptionView
-	controlPlaneCount    int
-	workerCount          int
-	cni                  capi.CNIFlavor
-	bridge               string
-	numSockets           int
-	numCores             int
-	memoryMiB            int
-	bootVolumeSize       int
+	name              string
+	templateID        int64
+	template          templateOptionView
+	controlPlaneCount int
+	workerCount       int
+	cni               capi.CNIFlavor
+	bridge            string
+	numSockets        int
+	numCores          int
+	memoryMiB         int
+	bootVolumeSize    int
+	// worker is the optional per-role override; a zero field means the
+	// workers use the control plane's value.
+	worker               capi.WorkerSizing
 	gateway              string
 	ipPrefix             int
 	controlPlaneEndpoint string
@@ -234,15 +238,21 @@ type clusterForm struct {
 func (s *Server) parseClusterForm(r *http.Request, connID int64) (clusterForm, error) {
 	r.ParseForm()
 	f := clusterForm{
-		name:                 strings.TrimSpace(r.FormValue("name")),
-		controlPlaneCount:    atoiDefault(r.FormValue("control_plane_count"), 1),
-		workerCount:          atoiDefault(r.FormValue("worker_count"), 0),
-		cni:                  capi.CNIFlavor(r.FormValue("cni")),
-		bridge:               r.FormValue("bridge"),
-		numSockets:           atoiDefault(r.FormValue("num_sockets"), 1),
-		numCores:             atoiDefault(r.FormValue("num_cores"), 2),
-		memoryMiB:            atoiDefault(r.FormValue("memory_mib"), 4096),
-		bootVolumeSize:       atoiDefault(r.FormValue("boot_volume_size"), 100),
+		name:              strings.TrimSpace(r.FormValue("name")),
+		controlPlaneCount: atoiDefault(r.FormValue("control_plane_count"), 1),
+		workerCount:       atoiDefault(r.FormValue("worker_count"), 0),
+		cni:               capi.CNIFlavor(r.FormValue("cni")),
+		bridge:            r.FormValue("bridge"),
+		numSockets:        atoiDefault(r.FormValue("num_sockets"), 1),
+		numCores:          atoiDefault(r.FormValue("num_cores"), 2),
+		memoryMiB:         atoiDefault(r.FormValue("memory_mib"), 4096),
+		bootVolumeSize:    atoiDefault(r.FormValue("boot_volume_size"), 100),
+		worker: capi.WorkerSizing{
+			NumSockets:       atoiDefault(strings.TrimSpace(r.FormValue("worker_num_sockets")), 0),
+			NumCores:         atoiDefault(strings.TrimSpace(r.FormValue("worker_num_cores")), 0),
+			MemoryMiB:        atoiDefault(strings.TrimSpace(r.FormValue("worker_memory_mib")), 0),
+			BootVolumeSizeGB: atoiDefault(strings.TrimSpace(r.FormValue("worker_boot_volume_size")), 0),
+		},
 		gateway:              r.FormValue("gateway"),
 		ipPrefix:             atoiDefault(r.FormValue("ip_prefix"), 24),
 		controlPlaneEndpoint: r.FormValue("control_plane_endpoint_ip"),
@@ -290,8 +300,21 @@ func (s *Server) parseClusterForm(r *http.Request, connID int64) (clusterForm, e
 		},
 		internalCA: strings.TrimSpace(r.FormValue("internal_ca_cert")),
 	}
+	// The checkbox decides, not the fields. The form is pre-filled from the
+	// previous cluster's saved GitOps settings (see saveClusterDefaults) and
+	// the fields stay in the page — merely hidden — when the box is unticked,
+	// so an operator who does not want GitOps this time still submits the old
+	// repo URL and token. Treating those leftovers as an error (or, worse, as
+	// a request) made the tick meaningless: GitOps had to be ticked or the
+	// saved values wiped by hand. Unticked means the values are ignored; they
+	// are not forgotten, because saveClusterDefaults keeps the last non-empty
+	// value for the next time the box is ticked.
+	f.addons = withoutUntickedGitOps(f.addons)
 	if f.name == "" {
 		return f, errBadInput("cluster name is required")
+	}
+	if err := validateWorkerSizing(r); err != nil {
+		return f, err
 	}
 	if f.addons.MetalLB && f.addons.MetalLBIPPool == "" {
 		return f, errBadInput("MetalLB is checked but no IP pool was given")
@@ -400,6 +423,16 @@ func validateOIDCForm(oidc capi.OIDCConfig) error {
 	return nil
 }
 
+// withoutUntickedGitOps drops the GitOps settings when the GitOps box is not
+// ticked; see the call site in parseClusterForm for why.
+func withoutUntickedGitOps(a capi.AddonSelection) capi.AddonSelection {
+	if !a.GitOps {
+		a.GitOpsRepoURL, a.GitOpsBranch, a.GitOpsPath = "", "", ""
+		a.GitOpsUsername, a.GitOpsToken, a.GitOpsCACert = "", "", ""
+	}
+	return a
+}
+
 // validateGitOpsForm mirrors validateRegistryForm/validateOIDCForm: same
 // "either configured or empty" contract, same real-PEM check on the CA.
 func validateGitOpsForm(a capi.AddonSelection) error {
@@ -443,6 +476,42 @@ func validateGitOpsForm(a capi.AddonSelection) error {
 		}
 	}
 	return nil
+}
+
+// validateWorkerSizing rejects a worker size that was typed but is unusable.
+// Blank means "same as the control plane" and is fine; anything else that
+// does not parse as a sensible number is an error rather than silently
+// falling back to the control plane's size, which would build workers the
+// operator did not ask for.
+func validateWorkerSizing(r *http.Request) error {
+	for _, c := range []struct {
+		field, label string
+		min          int
+	}{
+		{"worker_num_sockets", "worker CPU sockets", 1},
+		{"worker_num_cores", "worker CPU cores", 1},
+		{"worker_memory_mib", "worker memory (MiB)", 512},
+		{"worker_boot_volume_size", "worker boot disk (GB)", 10},
+	} {
+		v := strings.TrimSpace(r.FormValue(c.field))
+		if v == "" {
+			continue
+		}
+		n, err := strconv.Atoi(v)
+		if err != nil || n < c.min {
+			return errBadInput(fmt.Sprintf("%s must be a whole number of at least %d, or left blank to match the control plane", c.label, c.min))
+		}
+	}
+	return nil
+}
+
+func firstPositive(vals ...int) int {
+	for _, v := range vals {
+		if v > 0 {
+			return v
+		}
+	}
+	return 0
 }
 
 func atoiDefault(s string, def int) int {
@@ -524,6 +593,7 @@ func (s *Server) handleClustersPreview(w http.ResponseWriter, r *http.Request) {
 		ControlPlaneEndpointIP: f.controlPlaneEndpoint, NodeIPRange: f.nodeIPRange,
 		Gateway: f.gateway, IPPrefix: f.ipPrefix, DNSServers: f.dnsServers, Bridge: f.bridge,
 		BootVolumeSizeGB: f.bootVolumeSize, NumSockets: f.numSockets, NumCores: f.numCores, MemoryMiB: f.memoryMiB,
+		Worker:   f.worker,
 		Registry: f.registry, OIDC: f.oidc, ConnectionID: conn.ID,
 		InternalCA: f.internalCA, PrivateDNS: f.privateDNS,
 	}
@@ -549,7 +619,17 @@ func (s *Server) handleClustersPreview(w http.ResponseWriter, r *http.Request) {
 		"ControlPlaneCount": f.controlPlaneCount, "WorkerCount": f.workerCount,
 		"Bridge": f.bridge, "NumSockets": f.numSockets, "NumCores": f.numCores,
 		"MemoryMiB": f.memoryMiB, "BootVolumeSize": f.bootVolumeSize,
-		"Gateway": f.gateway, "IPPrefix": f.ipPrefix, "ControlPlaneEndpoint": f.controlPlaneEndpoint,
+		// Carried through to the apply POST like every other field; the
+		// "Effective" values are what the workers will actually get, for the
+		// summary line (an empty override inherits the control plane's).
+		"WorkerNumSockets": f.worker.NumSockets, "WorkerNumCores": f.worker.NumCores,
+		"WorkerMemoryMiB": f.worker.MemoryMiB, "WorkerBootVolumeSize": f.worker.BootVolumeSizeGB,
+		"WorkerSized":           !f.worker.IsZero(),
+		"WorkerEffSockets":      firstPositive(f.worker.NumSockets, f.numSockets),
+		"WorkerEffCores":        firstPositive(f.worker.NumCores, f.numCores),
+		"WorkerEffMemoryMiB":    firstPositive(f.worker.MemoryMiB, f.memoryMiB),
+		"WorkerEffBootVolumeGB": firstPositive(f.worker.BootVolumeSizeGB, f.bootVolumeSize),
+		"Gateway":               f.gateway, "IPPrefix": f.ipPrefix, "ControlPlaneEndpoint": f.controlPlaneEndpoint,
 		"NodeIPRange": f.nodeIPRange, "DNSServers": strings.Join(f.dnsServers, ", "), "AllowedNodes": f.allowedNodes,
 		"InstallMetricsServer": f.addons.MetricsServer, "InstallIstio": f.addons.Istio,
 		"InstallMetalLB": f.addons.MetalLB, "MetalLBIPPool": f.addons.MetalLBIPPool,

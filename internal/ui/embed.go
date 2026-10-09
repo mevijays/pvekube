@@ -40,6 +40,7 @@ var pageFiles = map[string]string{
 	"clusters":          "templates/clusters.html",
 	"cluster_detail":    "templates/cluster_detail.html",
 	"cluster_resources": "templates/cluster_resources.html",
+	"kubeconfig":        "templates/kubeconfig.html",
 }
 
 var pages = mustParsePages()

@@ -132,7 +132,7 @@
       </div>
 
       <div>
-        <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Machine sizing</h3>
+        <h3 class="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Control plane sizing</h3>
         <div class="grid gap-4 sm:grid-cols-4">
           <div>
             <label class="mb-1 block text-sm font-medium text-slate-300">CPU sockets</label>
@@ -149,6 +149,29 @@
           <div>
             <label class="mb-1 block text-sm font-medium text-slate-300">Boot disk (GB)</label>
             <input type="number" name="boot_volume_size" value="100" min="10" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <h3 class="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Worker sizing <span class="font-normal normal-case text-slate-600">(optional)</span></h3>
+        <p class="mb-2 text-xs text-slate-500">Leave a field blank to give workers the same value as the control plane above. Fill in only what should differ — e.g. bigger workers: more cores and memory.</p>
+        <div class="grid gap-4 sm:grid-cols-4">
+          <div>
+            <label class="mb-1 block text-sm font-medium text-slate-300">CPU sockets</label>
+            <input type="number" name="worker_num_sockets" min="1" placeholder="same" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+          </div>
+          <div>
+            <label class="mb-1 block text-sm font-medium text-slate-300">CPU cores</label>
+            <input type="number" name="worker_num_cores" min="1" placeholder="same" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+          </div>
+          <div>
+            <label class="mb-1 block text-sm font-medium text-slate-300">Memory (MiB)</label>
+            <input type="number" name="worker_memory_mib" min="512" placeholder="same" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+          </div>
+          <div>
+            <label class="mb-1 block text-sm font-medium text-slate-300">Boot disk (GB)</label>
+            <input type="number" name="worker_boot_volume_size" min="10" placeholder="same" class="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
           </div>
         </div>
       </div>

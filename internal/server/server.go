@@ -102,7 +102,12 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /templates/panel", s.requireAuth(s.handleTemplatesPanel))
 	mux.HandleFunc("POST /templates/validate", s.requireAuth(s.handleTemplatesValidate))
 	mux.HandleFunc("POST /templates/build", s.requireAuth(s.handleTemplatesBuild))
+	mux.HandleFunc("POST /templates/cleanup", s.requireAuth(s.handleTemplatesCleanup))
 	mux.HandleFunc("POST /templates/{id}/delete", s.requireAuth(s.handleTemplatesDelete))
+
+	mux.HandleFunc("GET /kubeconfig", s.requireAuth(s.handleKubeconfigPage))
+	mux.HandleFunc("POST /kubeconfig/validate", s.requireAuth(s.handleKubeconfigValidate))
+	mux.HandleFunc("POST /kubeconfig/download", s.requireAuth(s.handleKubeconfigDownload))
 
 	mux.HandleFunc("GET /clusters", s.requireAuth(s.handleClustersPage))
 	mux.HandleFunc("GET /clusters/panel", s.requireAuth(s.handleClustersPanel))
