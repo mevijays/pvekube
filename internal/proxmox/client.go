@@ -1,8 +1,9 @@
 // Package proxmox is a thin REST client for the Proxmox VE API, scoped to
 // what PVEKube needs: read-only discovery (nodes, storage, network, next
-// VMID) plus permission self-verification. It deliberately does NOT
-// reimplement VM lifecycle management — that's Packer's and CAPMOX's job;
-// this client only ever needs to look, not touch.
+// VMID), permission self-verification, and the few VM operations PVEKube
+// performs itself (stopping/destroying leftover build VMs, and attaching an
+// extra data disk to worker VMs — see disks.go). It deliberately does NOT
+// reimplement VM provisioning — that's Packer's and CAPMOX's job.
 package proxmox
 
 import (

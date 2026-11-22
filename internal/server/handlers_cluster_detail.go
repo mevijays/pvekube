@@ -17,7 +17,7 @@ func clusterOperationLock(name string) string { return "cluster:" + name }
 
 func clusterOperationError(err error) string {
 	if errors.Is(err, jobs.ErrResourceBusy) {
-		return "another scale, upgrade, apply, or delete operation is already running for this cluster"
+		return "another scale, upgrade, resize, apply, or delete operation is already running for this cluster"
 	}
 	return "starting job: " + err.Error()
 }
@@ -144,7 +144,7 @@ func (s *Server) handleClusterScaleWorkers(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "invalid replica count", http.StatusBadRequest)
 		return
 	}
-	s.runLifecycleJob(w, name, capi.ScaleWorkersSpec(s.dataDir, s.binDir, name, replicas))
+	s.runLifecycleJob(w, name, s.attachWorkerDisks(name, capi.ScaleWorkersSpec(s.dataDir, s.binDir, name, replicas)))
 }
 
 func (s *Server) handleClusterScaleControlPlane(w http.ResponseWriter, r *http.Request) {
@@ -177,6 +177,9 @@ func (s *Server) handleClusterDelete(w http.ResponseWriter, r *http.Request) {
 	spec := capi.DeleteClusterSpec(s.dataDir, s.binDir, name)
 	spec.Step("Remove local record", func(c *jobs.Ctx) error {
 		c.Logf("Removing cluster record from local database")
+		if _, err := s.db.Exec(`DELETE FROM cluster_worker_disk WHERE cluster_name = ?`, name); err != nil {
+			return err
+		}
 		_, err := s.db.Exec(`DELETE FROM clusters WHERE name = ?`, name)
 		return err
 	})
@@ -256,6 +259,12 @@ func (s *Server) renderUpgradePanel(w http.ResponseWriter, r *http.Request, name
 	}
 	data["Templates"] = views
 	data["AnyEligible"] = anyEligible
+	if errMsg == "" {
+		if msg := s.rolloutBlocker(r, name, "upgrade"); msg != "" {
+			data["Error"] = msg
+			data["AnyEligible"] = false
+		}
+	}
 	ui.RenderPartial(w, "cluster_upgrade", data)
 }
 
@@ -312,13 +321,18 @@ func (s *Server) handleClusterUpgrade(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	spec := capi.UpgradeSpec(s.dataDir, s.binDir, capi.UpgradeInput{
+	if msg := s.rolloutBlocker(r, name, "upgrade"); msg != "" {
+		s.renderUpgradePanel(w, r, name, msg)
+		return
+	}
+
+	spec := s.attachWorkerDisks(name, capi.UpgradeSpec(s.dataDir, s.binDir, capi.UpgradeInput{
 		ClusterName:     name,
 		CurrentVersion:  current,
 		NewVersion:      tmpl.K8sVersion,
 		NewSourceNode:   tmpl.Node,
 		NewTemplateVMID: tmpl.VMID,
-	})
+	}))
 	jobID, err := s.jobs.StartExclusive(spec, `{"cluster":"`+name+`"}`, clusterOperationLock(name))
 	if err != nil {
 		s.renderUpgradePanel(w, r, name, clusterOperationError(err))

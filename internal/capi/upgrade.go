@@ -317,11 +317,18 @@ func UpgradeSpec(dataDir, binDir string, in UpgradeInput) *jobs.Spec {
 // ready while half of them are still the OLD version, because CAPI only
 // removes an old machine once its replacement is healthy.
 func waitForUpgradeStep(dataDir, binDir string, in UpgradeInput) func(*jobs.Ctx) error {
+	return waitForRollout(dataDir, binDir, in.ClusterName, "Upgrade", in.NewVersion)
+}
+
+// waitForRollout is the wait loop shared by upgrades and resizes: both finish
+// the same way, with Cluster API having replaced every machine. verb ("Upgrade",
+// "Resize") and target ("v1.37.0", "the new machine size") only shape the log
+// and error messages.
+func waitForRollout(dataDir, binDir, clusterName, verb, target string) func(*jobs.Ctx) error {
 	return func(c *jobs.Ctx) error {
 		kubectlBin := filepath.Join(binDir, "kubectl")
 		kcPath := bootstrap.KubeconfigPath(dataDir)
-		kcpName := in.ClusterName + "-control-plane"
-		mdName := in.ClusterName + "-workers"
+		kcpName := clusterName + "-control-plane"
 
 		c.Logf("Every node is replaced, not updated in place: expect several minutes per machine.")
 
@@ -332,31 +339,21 @@ func waitForUpgradeStep(dataDir, binDir string, in UpgradeInput) func(*jobs.Ctx)
 		defer ticker.Stop()
 
 		for {
-			cpWant, e1 := replicaCount(c, kubectlBin, kcPath, "kubeadmcontrolplane", kcpName, "{.spec.replicas}")
-			cpUpToDate, e2 := replicaCount(c, kubectlBin, kcPath, "kubeadmcontrolplane", kcpName, "{.status.upToDateReplicas}")
-			cpReady, e3 := replicaCount(c, kubectlBin, kcPath, "kubeadmcontrolplane", kcpName, "{.status.readyReplicas}")
-			mdWant, e4 := replicaCount(c, kubectlBin, kcPath, "machinedeployment", mdName, "{.spec.replicas}")
-			mdUpToDate, e5 := replicaCount(c, kubectlBin, kcPath, "machinedeployment", mdName, "{.status.upToDateReplicas}")
-			mdReady, e6 := replicaCount(c, kubectlBin, kcPath, "machinedeployment", mdName, "{.status.readyReplicas}")
-
-			readable := e1 == nil && e2 == nil && e3 == nil && e4 == nil && e5 == nil && e6 == nil
-			if readable {
-				done := cpUpToDate == cpWant && cpReady == cpWant && mdUpToDate == mdWant && mdReady == mdWant
-				if done {
-					c.Logf("✓ Upgrade complete — control plane %d/%d and workers %d/%d are on %s and ready",
-						cpUpToDate, cpWant, mdUpToDate, mdWant, in.NewVersion)
-					return nil
-				}
-				c.Logf("Progress: control plane %d/%d up-to-date (%d ready) · workers %d/%d up-to-date (%d ready)",
-					cpUpToDate, cpWant, cpReady, mdUpToDate, mdWant, mdReady)
-				logMachinePhases(c, kubectlBin, kcPath, in.ClusterName)
+			st, err := ClusterRollout(c, dataDir, binDir, clusterName)
+			if err != nil {
+				c.Logf("Waiting for rollout status to become readable: %v", err)
+			} else if st.Settled {
+				c.Logf("✓ %s complete — %s, all on %s and ready", verb, st.Summary, target)
+				return nil
 			} else {
-				c.Logf("Waiting for upgrade status to become readable...")
+				c.Logf("Progress: %s", st.Summary)
+				c.Logf("  still waiting: %s", st.Reason())
+				logMachinePhases(c, kubectlBin, kcPath, clusterName)
 			}
 
 			if time.Now().After(deadline) {
-				return fmt.Errorf("cluster %s was still rolling to %s after 90 minutes — the upgrade is not rolled back, it is simply unfinished; check `kubectl describe kubeadmcontrolplane %s` and the CAPMOX controller logs on the management cluster",
-					in.ClusterName, in.NewVersion, kcpName)
+				return fmt.Errorf("cluster %s was still rolling to %s after 90 minutes — the %s is not rolled back, it is simply unfinished; check `kubectl describe kubeadmcontrolplane %s` and the CAPMOX controller logs on the management cluster",
+					clusterName, target, strings.ToLower(verb), kcpName)
 			}
 
 			select {

@@ -1,0 +1,81 @@
+{{/* Worker data-disk panel. Rendered into #cluster-upgrade-panel (outside the
+     self-polling #cluster-status). Workers only: control-plane nodes never
+     get an extra disk. */}}
+{{define "cluster_worker_disk"}}
+<div class="space-y-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
+  <div class="flex items-start justify-between gap-4">
+    <div>
+      <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-400">Worker data disk</h2>
+      <p class="mt-1 text-sm text-slate-400">
+        Attach an extra disk (for example a Ceph/Rook OSD disk) to every worker VM of
+        <strong class="text-white">{{.ClusterName}}</strong>, through the Proxmox API.
+        Control-plane nodes are never touched.
+      </p>
+    </div>
+    <button type="button" onclick="document.getElementById('cluster-upgrade-panel').innerHTML='';"
+            class="flex-none text-sm text-slate-500 hover:text-slate-300">
+      <i class="fa fa-times mr-1"></i>Close
+    </button>
+  </div>
+
+  {{if .Error}}
+  <div class="flex items-start gap-2 rounded-lg border border-red-900 bg-red-950/50 px-3 py-2 text-sm text-red-300">
+    <i class="fa fa-exclamation-circle mt-0.5"></i><span>{{.Error}}</span>
+  </div>
+  {{end}}
+
+  <div class="flex items-start gap-2 rounded-lg border border-slate-700 bg-slate-950/40 px-3 py-2 text-xs text-slate-300">
+    <i class="fa fa-info-circle mt-0.5"></i>
+    <span>
+      The disk is added as <code>scsi1</code>, which the guest sees as <code>/dev/sdb</code> (what a Rook
+      <code>deviceFilter: ^sdb$</code> expects). A worker that already has a <code>scsi1</code> disk is left unchanged.
+      Because upgrades and resizes replace every worker VM, PVEKube remembers this setting and attaches the disk to the
+      replacement workers when those operations finish. <strong>Ceph still has to rebuild its data</strong> on a replaced node's
+      new, empty disk — roll workers one at a time and wait for the cluster to be healthy.
+    </span>
+  </div>
+
+  {{if .Policy}}
+  <div class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-emerald-900 bg-emerald-950/20 px-3 py-2 text-sm text-emerald-200">
+    <span><i class="fa fa-check-circle mr-1.5"></i>Active policy: <strong>{{.Policy.SizeGiB}} GiB</strong> on <strong>{{.Policy.Storage}}</strong> for every worker.</span>
+    <form hx-post="/clusters/{{.ClusterName}}/worker-disk/forget" hx-target="#cluster-upgrade-panel" hx-swap="innerHTML"
+          hx-confirm="Stop attaching the disk to new workers? Disks already attached are not removed.">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <button type="submit" class="text-xs text-emerald-300 underline hover:text-white">Stop auto-attaching</button>
+    </form>
+  </div>
+  {{end}}
+
+  <p class="text-xs text-slate-500">
+    {{if .WorkerCount}}{{.WorkerCount}} worker VM{{if ne .WorkerCount 1}}s{{end}} will be processed.{{else}}No provisioned worker VMs were found right now.{{end}}
+    {{range .Skipped}}<br>skipped — {{.}}{{end}}
+  </p>
+
+  <form hx-post="/clusters/{{.ClusterName}}/worker-disk" hx-target="#cluster-upgrade-panel" hx-swap="innerHTML"
+        hx-confirm="Attach this disk to every worker VM of &quot;{{.ClusterName}}&quot; now? New disks are empty; existing disks are never changed."
+        class="space-y-4">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      <label class="block text-xs text-slate-400">Proxmox storage
+        {{if .Storages}}
+        <select name="storage" class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500">
+          {{$in := .InStorage}}
+          {{range .Storages}}<option value="{{.}}" {{if eq . $in}}selected{{end}}>{{.}}</option>{{end}}
+        </select>
+        {{else}}
+        <input type="text" name="storage" value="{{.InStorage}}" placeholder="e.g. local-lvm"
+               class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500">
+        {{end}}
+      </label>
+      <label class="block text-xs text-slate-400">Size (GiB)
+        <input type="number" name="size_gib" min="1" step="1" value="{{.InSize}}" placeholder="e.g. 100"
+               class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500">
+      </label>
+    </div>
+    <button type="submit" data-loading-text="Starting..."
+            class="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-brand-700">
+      <i class="fa fa-hdd mr-1.5"></i>Add disk to workers
+    </button>
+  </form>
+</div>
+{{end}}

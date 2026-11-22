@@ -1,0 +1,83 @@
+{{/* Node resize panel. Rendered into #cluster-upgrade-panel (outside the
+     self-polling #cluster-status, like the upgrade panel). Blank fields mean
+     "leave unchanged"; RAM is entered in GiB. */}}
+{{define "cluster_resize"}}
+<div class="space-y-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
+  <div class="flex items-start justify-between gap-4">
+    <div>
+      <h2 class="text-sm font-semibold uppercase tracking-wide text-slate-400">Resize nodes</h2>
+      <p class="mt-1 text-sm text-slate-400">
+        Change the RAM, cores or sockets of <strong class="text-white">{{.ClusterName}}</strong>'s control plane and/or workers.
+        Leave a field blank to keep its current value.
+      </p>
+    </div>
+    <button type="button" onclick="document.getElementById('cluster-upgrade-panel').innerHTML='';"
+            class="flex-none text-sm text-slate-500 hover:text-slate-300">
+      <i class="fa fa-times mr-1"></i>Close
+    </button>
+  </div>
+
+  {{if .Error}}
+  <div class="flex items-start gap-2 rounded-lg border border-red-900 bg-red-950/50 px-3 py-2 text-sm text-red-300">
+    <i class="fa fa-exclamation-circle mt-0.5"></i><span>{{.Error}}</span>
+  </div>
+  {{end}}
+
+  <div class="flex items-start gap-2 rounded-lg border border-amber-900 bg-amber-950/20 px-3 py-2 text-xs text-amber-200">
+    <i class="fa fa-exclamation-triangle mt-0.5"></i>
+    <span>
+      Nothing is resized in place. Cluster API creates a new machine template with the new size and then
+      <em>replaces every node</em> of the role with a brand-new Proxmox VM — one at a time, draining each old node first.
+      Anything stored on a node's own disks is destroyed with it, including <strong>Ceph/Rook OSD disks and local volumes</strong>.
+      Make sure the Proxmox host has room for the larger VMs, plus one extra VM while a role rolls.
+    </span>
+  </div>
+
+  {{if .ControlPlane}}
+  <form hx-post="/clusters/{{.ClusterName}}/resize" hx-target="#cluster-upgrade-panel" hx-swap="innerHTML"
+        hx-confirm="This starts a rolling replacement of the selected nodes in &quot;{{.ClusterName}}&quot;. Old VMs are destroyed as their replacements come up and it cannot be reversed. Continue?"
+        class="space-y-5">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+
+    {{template "resize_role" .ControlPlane}}
+    {{template "resize_role" .Workers}}
+
+    <label class="flex items-start gap-2 text-sm text-slate-300">
+      <input type="checkbox" name="ack" class="mt-1 rounded border-slate-600 bg-slate-950">
+      <span>I understand every node of the selected role(s) is replaced and anything on a node's own disks (Ceph OSDs, local volumes) is lost.</span>
+    </label>
+
+    <button type="submit" data-loading-text="Starting resize..."
+            class="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-brand-700">
+      <i class="fa fa-expand mr-1.5"></i>Start rolling resize
+    </button>
+  </form>
+  {{end}}
+</div>
+{{end}}
+
+{{define "resize_role"}}
+<div class="space-y-2 rounded-xl border border-slate-800 bg-slate-950/40 p-4">
+  <div class="flex flex-wrap items-baseline justify-between gap-2">
+    <h3 class="text-sm font-semibold text-white">{{.Label}}</h3>
+    <span class="text-xs text-slate-500">{{.Replicas}} node{{if ne .Replicas 1}}s{{end}} · today: {{.Summary}}</span>
+  </div>
+  <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
+    <label class="block text-xs text-slate-400">RAM (GiB)
+      <input type="number" name="{{.Prefix}}_memory_gib" min="2" step="0.5" value="{{.InMemory}}"
+             placeholder="{{if .MemoryGiB}}{{.MemoryGiB}}{{else}}unchanged{{end}}"
+             class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500">
+    </label>
+    <label class="block text-xs text-slate-400">Cores per socket
+      <input type="number" name="{{.Prefix}}_cores" min="1" step="1" value="{{.InCores}}"
+             placeholder="{{if .Cores}}{{.Cores}}{{else}}unchanged{{end}}"
+             class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500">
+    </label>
+    <label class="block text-xs text-slate-400">Sockets
+      <input type="number" name="{{.Prefix}}_sockets" min="1" step="1" value="{{.InSockets}}"
+             placeholder="{{if .Sockets}}{{.Sockets}}{{else}}unchanged{{end}}"
+             class="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500">
+    </label>
+  </div>
+</div>
+{{end}}
