@@ -200,7 +200,7 @@ func TestPackerFlagsOverridesBuildVMMemory(t *testing.T) {
 		t.Fatalf("memory override missing from PACKER_FLAGS: %q", got[0])
 	}
 	// The pre-existing flags must survive alongside it.
-	for _, want := range []string{"--var disk_format=raw", "--var vmid=119", "extra_debs"} {
+	for _, want := range []string{"--var disk_format=raw", "--var vmid=119", "extra_debs", "--var cpu_type=x86-64-v3"} {
 		if !strings.Contains(got[0], want) {
 			t.Fatalf("PACKER_FLAGS lost %q: %s", want, got[0])
 		}
