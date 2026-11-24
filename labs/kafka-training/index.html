@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kafka Training: zero to cluster admin</title>
+<script src="assets/js/theme.js"></script>
+<link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body data-root=".">
+<aside class="side" id="side"></aside>
+<main class="main" id="main">
+
+<section class="hero">
+  <div class="kicker">Hands-on course for your devk8s cluster</div>
+  <h1>Learn Apache Kafka from zero, then run it for real</h1>
+  <p class="lead">No prior knowledge needed. You will see how data is published to a topic, split into partitions, copied for safety, and read by consumers. Then you will operate and troubleshoot a real 3-broker Kafka cluster running on your Kubernetes.</p>
+  <div class="meta"><span class="pill">10 modules</span><span class="pill">6 interactive simulators</span><span class="pill">about 4 hours</span><span class="pill">works offline</span></div>
+
+  <figure class="fig">
+    <svg viewBox="0 0 720 270" role="img" aria-label="Animated diagram: producers send messages into three partitions of a topic, and a consumer group reads them">
+      <title>Data flowing from producers through topic partitions to consumers</title>
+      <g class="nd c-gray"><rect x="10" y="40" width="100" height="40" rx="8"/><text class="t" x="60" y="60" text-anchor="middle" dominant-baseline="central">Web app</text></g>
+      <g class="nd c-gray"><rect x="10" y="115" width="100" height="40" rx="8"/><text class="t" x="60" y="135" text-anchor="middle" dominant-baseline="central">Mobile app</text></g>
+      <g class="nd c-gray"><rect x="10" y="190" width="100" height="40" rx="8"/><text class="t" x="60" y="210" text-anchor="middle" dominant-baseline="central">Sensors</text></g>
+      <text class="ts" x="60" y="256" text-anchor="middle">Producers</text>
+      <rect class="cont" x="190" y="18" width="330" height="224" rx="16"/>
+      <text class="th" x="208" y="38">Topic: orders</text>
+      <g class="nd c-purple"><rect x="210" y="56" width="290" height="40" rx="8"/><text class="ts" x="222" y="76" dominant-baseline="central">P0</text></g>
+      <g class="nd c-purple"><rect x="210" y="115" width="290" height="40" rx="8"/><text class="ts" x="222" y="135" dominant-baseline="central">P1</text></g>
+      <g class="nd c-purple"><rect x="210" y="174" width="290" height="40" rx="8"/><text class="ts" x="222" y="194" dominant-baseline="central">P2</text></g>
+      <g class="nd c-teal">
+        <rect x="246" y="64" width="24" height="24" rx="4"/><rect x="276" y="64" width="24" height="24" rx="4"/><rect x="306" y="64" width="24" height="24" rx="4"/><rect x="336" y="64" width="24" height="24" rx="4"/><rect x="366" y="64" width="24" height="24" rx="4"/>
+        <rect x="246" y="123" width="24" height="24" rx="4"/><rect x="276" y="123" width="24" height="24" rx="4"/><rect x="306" y="123" width="24" height="24" rx="4"/><rect x="336" y="123" width="24" height="24" rx="4"/>
+        <rect x="246" y="182" width="24" height="24" rx="4"/><rect x="276" y="182" width="24" height="24" rx="4"/><rect x="306" y="182" width="24" height="24" rx="4"/><rect x="336" y="182" width="24" height="24" rx="4"/><rect x="366" y="182" width="24" height="24" rx="4"/><rect x="396" y="182" width="24" height="24" rx="4"/>
+      </g>
+      <rect x="396" y="64" width="24" height="24" rx="4" fill="none" stroke="var(--teal-s)" stroke-dasharray="3 3"><animate attributeName="opacity" values="1;.2;1" dur="1.6s" repeatCount="indefinite"/></rect>
+      <rect x="366" y="123" width="24" height="24" rx="4" fill="none" stroke="var(--teal-s)" stroke-dasharray="3 3"><animate attributeName="opacity" values="1;.2;1" dur="1.9s" repeatCount="indefinite"/></rect>
+      <rect x="426" y="182" width="24" height="24" rx="4" fill="none" stroke="var(--teal-s)" stroke-dasharray="3 3"><animate attributeName="opacity" values="1;.2;1" dur="1.4s" repeatCount="indefinite"/></rect>
+      <text class="ts" x="355" y="256" text-anchor="middle">Partitions = ordered, append-only logs</text>
+      <rect class="cont" x="580" y="40" width="130" height="190" rx="16"/>
+      <text class="ts" x="645" y="58" text-anchor="middle">Consumer group</text>
+      <g class="nd c-coral"><rect x="592" y="72" width="106" height="40" rx="8"/><text class="t" x="645" y="92" text-anchor="middle" dominant-baseline="central">Consumer A</text></g>
+      <g class="nd c-coral"><rect x="592" y="160" width="106" height="40" rx="8"/><text class="t" x="645" y="180" text-anchor="middle" dominant-baseline="central">Consumer B</text></g>
+      <g fill="var(--amber-s)">
+        <circle r="5"><animateMotion dur="2.4s" repeatCount="indefinite" path="M110 60 C 160 60 160 76 210 76"/></circle>
+        <circle r="5"><animateMotion dur="2.4s" begin="-1.2s" repeatCount="indefinite" path="M110 135 C 160 135 160 135 210 135"/></circle>
+        <circle r="5"><animateMotion dur="2.4s" begin="-.4s" repeatCount="indefinite" path="M110 210 C 160 210 160 194 210 194"/></circle>
+        <circle r="5"><animateMotion dur="2.4s" begin="-1.6s" repeatCount="indefinite" path="M110 60 C 160 60 160 135 210 135"/></circle>
+        <circle r="5"><animateMotion dur="2s" begin="-.2s" repeatCount="indefinite" path="M500 76 C 540 76 550 92 592 92"/></circle>
+        <circle r="5"><animateMotion dur="2s" begin="-1s" repeatCount="indefinite" path="M500 135 C 540 135 550 100 592 100"/></circle>
+        <circle r="5"><animateMotion dur="2s" begin="-.6s" repeatCount="indefinite" path="M500 194 C 540 194 550 180 592 180"/></circle>
+      </g>
+    </svg>
+    <figcaption>Producers write messages. Kafka stores them in partitions. Consumers read at their own speed. Nobody waits for anybody.</figcaption>
+  </figure>
+</section>
+
+<h2 class="reveal">Who is this for?</h2>
+<div class="grid g3 reveal">
+  <div class="card c-purple"><span class="tag">Beginner</span><h4 style="margin-top:8px">Never touched Kafka</h4><p>Start at module 1. Every term is explained with an everyday analogy before any command appears.</p></div>
+  <div class="card c-teal"><span class="tag">Developer</span><h4 style="margin-top:8px">Building with events</h4><p>Modules 3 and 5 cover producer and consumer design: keys, acks, offsets, delivery guarantees, lag.</p></div>
+  <div class="card c-coral"><span class="tag">Platform / ops</span><h4 style="margin-top:8px">Running the cluster</h4><p>Modules 4, 6, 7 and 9 cover replication, storage, the Kubernetes deployment, monitoring and failure drills.</p></div>
+</div>
+
+<h2 class="reveal">The learning path</h2>
+<p class="muted">Go in order. Each module ends with a quiz or lab so you know it stuck.</p>
+<div class="path reveal" id="path"></div>
+
+<h2 class="reveal">What you will be able to do</h2>
+<div class="grid g2 reveal">
+  <div class="card"><h4>Explain it</h4><ul><li>What a topic, partition, offset, broker and consumer group are</li><li>Why Kafka keeps messages after they are read</li><li>How keys decide partitions and ordering</li><li>How replication survives a broker failure</li></ul></div>
+  <div class="card"><h4>Operate it</h4><ul><li>Create, inspect and tune topics from the CLI</li><li>Read consumer lag and fix stuck consumers</li><li>Set retention and understand disk use</li><li>Diagnose under-replicated partitions and lost quorum</li></ul></div>
+</div>
+
+<h2 class="reveal">Your lab environment</h2>
+<div class="card reveal">
+  <p>Everything in modules 7 to 9 runs against a real cluster already deployed in your <code>devk8s</code> Kubernetes cluster, namespace <code>kafka</code>.</p>
+  <div class="tablewrap"><table>
+    <tr><th>Item</th><th>Value</th></tr>
+    <tr><td>Kafka</td><td>Apache Kafka 4.0.0, KRaft mode (no ZooKeeper), 3 brokers <code>kafka-0..2</code></td></tr>
+    <tr><td>Storage</td><td>5 Gi <code>ceph-block</code> volume per broker</td></tr>
+    <tr><td>Placement</td><td>One broker per worker node (pod anti-affinity)</td></tr>
+    <tr><td>Defaults</td><td>replication factor 3, <code>min.insync.replicas=2</code>, 3 partitions, 7 day retention, auto-create topics off</td></tr>
+    <tr><td>CLI pod</td><td><code>kafka-client</code> with every Kafka command-line tool</td></tr>
+    <tr><td>Manifest</td><td><code>labs/kafka/kafka.yaml</code></td></tr>
+  </table></div>
+  <p class="small muted" style="margin:0">If the cluster is not running, redeploy it with <code>kubectl --context devk8s-admin@devk8s apply -f labs/kafka/kafka.yaml</code>.</p>
+</div>
+
+<h2 class="reveal">How to use this course</h2>
+<ul class="reveal">
+  <li>Open this folder's <code>index.html</code> in any browser. It needs no internet, build step or server.</li>
+  <li>Use the simulators: click, break things, kill brokers. You cannot hurt anything here.</li>
+  <li>When a module says <span class="tag c-purple">Real output</span> the text was captured from your cluster.</li>
+  <li>Your progress and quiz scores are saved in your browser only.</li>
+</ul>
+<p><a class="btn primary" href="modules/01-why-kafka.html" style="display:inline-block;text-decoration:none">Start module 1</a></p>
+
+</main>
+<script src="assets/js/app.js"></script>
+<script>
+(function () {
+  var blurb = [
+    'Events, logs, and why companies use Kafka instead of calling services directly.',
+    'Broker, topic, partition, offset, record, cluster. Click through a live log.',
+    'How data gets into a topic: keys, partitioners, batching, acknowledgements.',
+    'Leaders, followers, ISR. Kill brokers in a simulator and watch Kafka recover.',
+    'Consumer groups, offsets, rebalancing, lag, and delivery guarantees.',
+    'KRaft controllers, log segments, retention, compaction, why Kafka is fast.',
+    'How your cluster is built: StatefulSet, services, volumes, anti-affinity.',
+    'Create topics, produce, consume, groups, failover. Real commands, real output.',
+    'Monitoring, configuration, runbooks, and a symptom-to-fix troubleshooter.',
+    'Final quiz, command cheat sheet, and a plain-English glossary.'
+  ];
+  var done = KT.store.get('done', {}), box = document.getElementById('path');
+  KT.MODULES.forEach(function (m, i) {
+    box.appendChild(KT.h('a', { href: 'modules/' + m.f, class: done[m.n] ? 'done' : '', html:
+      '<div class="n">' + (done[m.n] ? '&#10003;' : m.n) + '</div><div><b>' + m.t + '</b><span>' + blurb[i] + '</span></div><div class="t">' + m.m + ' min</div>' }));
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3. Publishing data (producers) | Kafka Training</title>
+<script src="../assets/js/theme.js"></script>
+<link rel="stylesheet" href="../assets/css/style.css">
+<style>
+  .three { display: grid; grid-template-columns: 150px repeat(3, 1fr); gap: 10px; align-items: stretch; }
+  .pbox { border: 1.5px solid var(--border); border-radius: 12px; padding: 10px; background: var(--surface); font-size: .85rem; transition: all .3s; min-height: 108px; }
+  .pbox h5 { margin: 0 0 6px; font-size: .86rem; } .pbox.down { background: var(--red-f); border-color: var(--red-s); color: var(--red-t); text-decoration: line-through; }
+  .pbox.lead { border-color: var(--purple-s); background: var(--purple-f); color: var(--purple-t); }
+  .pbox .has { margin-top: 8px; font: 600 .78rem var(--mono); padding: 4px 8px; border-radius: 8px; background: var(--surface2); display: inline-block; opacity: .35; transition: all .3s; }
+  .pbox .has.y { opacity: 1; background: var(--amber-f); color: var(--amber-t); border: 1px solid var(--amber-s); }
+  .verdict { font-size: .95rem; padding: 10px 14px; border-radius: 10px; margin-top: 12px; border: 1px solid var(--border); background: var(--surface2); }
+  .verdict.good { background: var(--teal-f); border-color: var(--teal-s); color: var(--teal-t); } .verdict.badv { background: var(--red-f); border-color: var(--red-s); color: var(--red-t); }
+  .phase { font: 600 .82rem var(--mono); color: var(--accent); min-height: 1.4em; margin: 8px 0 0; }
+  @media (max-width: 700px) { .three { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body data-root=".." data-module="3">
+<aside class="side" id="side"></aside>
+<main class="main" id="main">
+
+<div class="kicker">Module 3 of 10 &middot; The data journey</div>
+<h1>Publishing data (producers)</h1>
+<p class="lead">A producer is any program that writes records to a topic. This module follows one record from your code into Kafka, and shows the settings that decide whether it can ever be lost.</p>
+<div class="meta"><span class="pill">25 minutes</span><span class="pill">2 simulators</span><span class="pill">code samples: Java, Python, Go</span></div>
+<div class="goals"><h4>By the end you can</h4><ul>
+<li>Trace a record from <code>send()</code> to the broker's disk</li>
+<li>Choose <code>acks</code> and understand exactly what each value risks</li>
+<li>Explain retries, duplicates and idempotent producers</li>
+<li>Tune batching and compression for throughput</li></ul></div>
+
+<h2 class="reveal">1. The journey of one record</h2>
+<p class="reveal">When your code calls <code>send()</code>, the record does <b>not</b> go straight to the network. It passes through several stages inside the producer library first. Step through them.</p>
+<div class="sim reveal">
+  <div class="sim-h">Walkthrough: what happens on send()</div>
+  <div class="sim-b">
+    <div class="flow" id="pflow">
+      <div class="fbox c-gray"><b>Your code</b><small>ProducerRecord</small></div><div class="farr">&rarr;</div>
+      <div class="fbox c-gray"><b>Serializer</b><small>object to bytes</small></div><div class="farr">&rarr;</div>
+      <div class="fbox c-purple"><b>Partitioner</b><small>pick partition</small></div><div class="farr">&rarr;</div>
+      <div class="fbox c-amber"><b>Batch buffer</b><small>group records</small></div><div class="farr">&rarr;</div>
+      <div class="fbox c-purple"><b>Leader</b><small>broker appends</small></div><div class="farr">&rarr;</div>
+      <div class="fbox c-teal"><b>Followers</b><small>copy the data</small></div>
+    </div>
+    <div id="pctl"></div>
+  </div>
+</div>
+
+<h2 class="reveal">2. Choosing the partition</h2>
+<p class="reveal">The partitioner decides which partition gets the record. You met this in module 2:</p>
+<div class="tablewrap reveal"><table>
+<tr><th>You provide</th><th>Result</th></tr>
+<tr><td>A key</td><td><code>partition = murmur2(key) % numPartitions</code>. Same key, same partition, ordered.</td></tr>
+<tr><td>No key</td><td>Spread across partitions. Modern clients fill one partition's batch ("sticky") before switching, which gives bigger batches.</td></tr>
+<tr><td>An explicit partition number</td><td>Goes exactly there. Rarely a good idea.</td></tr>
+<tr><td>A custom partitioner</td><td>Your own class. Useful for special routing.</td></tr>
+</table></div>
+<div class="callout warn reveal"><strong class="ttl">Gotcha: different libraries hash differently</strong>
+The Java client uses murmur2. Some other libraries default to something else (for example librdkafka uses a CRC32-based <code>consistent_random</code>, and kafka-go's <code>Hash</code> balancer uses FNV-1a). If a Java app and a Go app both write the same key to one topic, they can land in <b>different</b> partitions and break per-key order. Fix: configure the non-Java client for murmur2 compatibility (<code>partitioner=murmur2_random</code> in librdkafka, <code>kafka.Murmur2Balancer</code> in kafka-go).</div>
+
+<h2 class="reveal">3. acks: how sure do you want to be?</h2>
+<p class="reveal"><code>acks</code> controls when the producer considers a send successful.</p>
+<div class="tablewrap reveal"><table>
+<tr><th>acks</th><th>Producer waits for</th><th>Speed</th><th>Can lose data?</th></tr>
+<tr><td><code>0</code></td><td>Nothing. Fire and forget.</td><td>Fastest</td><td><span class="tag c-red">Yes, silently</span></td></tr>
+<tr><td><code>1</code></td><td>The leader wrote it to its log</td><td>Fast</td><td><span class="tag c-amber">Yes, if the leader dies before followers copy</span></td></tr>
+<tr><td><code>all</code> (or <code>-1</code>)</td><td>Every in-sync replica has it (and at least <code>min.insync.replicas</code> of them)</td><td>Slower</td><td><span class="tag c-green">No, while one in-sync copy survives</span></td></tr>
+</table></div>
+<p class="reveal">Do not just read it: break it. Pick an <code>acks</code> value, pick when the leader crashes, and send.</p>
+
+<div class="sim reveal">
+  <div class="sim-h">Simulator: can this message be lost?</div>
+  <div class="sim-b">
+    <div class="sim-ctl">
+      <span>acks:</span><span class="seg" id="acks"><button data-v="0">0</button><button data-v="1">1</button><button data-v="all" class="on">all</button></span>
+      <span>Leader crash:</span>
+      <select id="crash"><option value="none">no crash</option><option value="A" selected>right after it writes the record</option><option value="B">after followers have copied</option></select>
+      <button class="btn primary" id="go">Send message</button>
+    </div>
+    <div class="three" id="pbrd">
+      <div class="pbox c-gray"><h5>Producer</h5><div id="pstat" class="small">idle</div></div>
+      <div class="pbox lead" id="b1"><h5>Broker 1 (leader)</h5><span class="has" id="h1">msg</span></div>
+      <div class="pbox" id="b2"><h5>Broker 2 (follower)</h5><span class="has" id="h2">msg</span></div>
+      <div class="pbox" id="b3"><h5>Broker 3 (follower)</h5><span class="has" id="h3">msg</span></div>
+    </div>
+    <div class="phase" id="phase"></div>
+    <div class="verdict" id="verdict">Press <b>Send message</b>. Try acks=1 with a crash right after the write, then acks=all with the same crash.</div>
+  </div>
+</div>
+<div class="callout tip reveal"><strong class="ttl">What you should have seen</strong>
+<ul><li><b>acks=0 or 1 with an early crash:</b> the producer was told "success" but the message exists only on the dead leader. It is gone, and nobody was warned.</li>
+<li><b>acks=all with the same crash:</b> no confirmation arrived, so the producer retried against the new leader and the message survived.</li></ul>
+The price of <code>acks=all</code> is slightly higher latency (a network hop to the followers). For anything you cannot afford to lose, pay it. Your lab cluster pairs it with <code>min.insync.replicas=2</code> (module 4).</div>
+
+<h2 class="reveal">4. Retries and duplicates</h2>
+<p class="reveal">Networks fail. If the producer sent a record but did not see the acknowledgement, it <b>retries</b>. The danger: the first attempt may have succeeded, so the retry writes a <b>duplicate</b>.</p>
+<p class="reveal">The fix is the <b>idempotent producer</b> (<code>enable.idempotence=true</code>, the default in modern clients). The producer gets an id and numbers every record per partition; the broker silently drops any number it has already seen. Retries become safe. It requires <code>acks=all</code>.</p>
+<div class="callout analogy reveal"><strong class="ttl">Analogy</strong>You post a numbered form. The office stamps "received #7". If you are unsure and post #7 again, the clerk says "already have #7" and bins the copy.</div>
+<div class="callout note reveal"><strong class="ttl">Remember</strong>Idempotence protects against duplicates created by <i>producer retries</i>. It does not protect against your application sending the same business event twice, or a consumer processing twice. That is module 5.</div>
+
+<h2 class="reveal">5. Batching and compression</h2>
+<p class="reveal">Sending one network request per record would be very slow. Producers group records for the same partition into <b>batches</b>. Two settings control this:</p>
+<ul class="reveal"><li><code>linger.ms</code>: how long to wait for more records before sending (default 5 ms in recent clients, older ones 0).</li><li><code>batch.size</code>: maximum bytes in a batch (default 16 KB). A full batch is sent immediately.</li></ul>
+<div class="sim reveal">
+  <div class="sim-h">Simulator: batching effect (one partition, ~200 byte records)</div>
+  <div class="sim-b">
+    <div class="sim-ctl">
+      <label>Records per second <input type="range" id="rate" min="100" max="20000" step="100" value="2000"> <span class="val" id="rateV" style="min-width:4em">2000</span></label>
+      <label>linger.ms <input type="range" id="linger" min="0" max="100" value="5"> <span class="val" id="lingerV">5</span></label>
+    </div>
+    <div class="grid g3" style="margin:0">
+      <div class="card"><div class="muted small">Network requests per second</div><div style="font:700 1.8rem var(--font);color:var(--accent)" id="reqs">-</div></div>
+      <div class="card"><div class="muted small">Average records per request</div><div style="font:700 1.8rem var(--font);color:var(--teal-s)" id="per">-</div></div>
+      <div class="card"><div class="muted small">Added latency (worst case)</div><div style="font:700 1.8rem var(--font);color:var(--coral-s)" id="lat">-</div></div>
+    </div>
+    <p class="small muted" style="margin:10px 0 0">Simplified model: a batch ships when it is full (about 80 records of 200 bytes in 16 KB) or when linger.ms expires. Raising linger.ms trades a few milliseconds of delay for far fewer requests.</p>
+  </div>
+</div>
+<p class="reveal"><b>Compression</b> (<code>compression.type</code> = <code>lz4</code>, <code>snappy</code>, <code>zstd</code> or <code>gzip</code>) compresses whole batches. Text-like data (JSON) often shrinks 3 to 5 times, saving network and disk. <code>lz4</code> or <code>zstd</code> are good defaults.</p>
+
+<h2 class="reveal">6. Producer settings you must know</h2>
+<div class="tablewrap reveal"><table>
+<tr><th>Setting</th><th>What it does</th><th>Good starting point</th></tr>
+<tr><td><code>bootstrap.servers</code></td><td>Where to find the cluster. List 2-3 brokers.</td><td>All three lab brokers</td></tr>
+<tr><td><code>acks</code></td><td>Durability vs latency</td><td><code>all</code></td></tr>
+<tr><td><code>enable.idempotence</code></td><td>Safe retries, no duplicates</td><td><code>true</code></td></tr>
+<tr><td><code>retries</code> / <code>delivery.timeout.ms</code></td><td>How long to keep trying before giving up (default 2 minutes)</td><td>Keep defaults</td></tr>
+<tr><td><code>linger.ms</code></td><td>Wait to build bigger batches</td><td>5 to 20</td></tr>
+<tr><td><code>batch.size</code></td><td>Max batch bytes</td><td>16 KB to 128 KB</td></tr>
+<tr><td><code>compression.type</code></td><td>Compress batches</td><td><code>lz4</code> or <code>zstd</code></td></tr>
+<tr><td><code>max.in.flight.requests.per.connection</code></td><td>Parallel unacknowledged requests. Order is kept up to 5 when idempotence is on.</td><td><code>5</code></td></tr>
+<tr><td><code>key.serializer</code> / <code>value.serializer</code></td><td>Turn your objects into bytes</td><td>String, JSON, Avro, Protobuf</td></tr>
+</table></div>
+
+<h2 class="reveal">7. Code: a producer in three languages</h2>
+<p class="reveal small muted">Inside Kubernetes, applications use the headless service names. Replace the topic and keys with yours.</p>
+<details class="reveal" open><summary>Java</summary><div>
+<pre><code>Properties p = new Properties();
+p.put("bootstrap.servers", "kafka-0.kafka-headless.kafka.svc.cluster.local:9092");
+p.put("key.serializer",   "org.apache.kafka.common.serialization.StringSerializer");
+p.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+p.put("acks", "all");
+p.put("enable.idempotence", "true");
+
+try (KafkaProducer&lt;String, String&gt; producer = new KafkaProducer&lt;&gt;(p)) {
+  producer.send(new ProducerRecord&lt;&gt;("orders", "cust-A", "{\"orderId\":1001}"),
+    (meta, err) -&gt; {
+      if (err != null) err.printStackTrace();
+      else System.out.printf("partition=%d offset=%d%n", meta.partition(), meta.offset());
+    });
+  producer.flush();
+}</code></pre></div></details>
+<details class="reveal"><summary>Python (confluent-kafka)</summary><div>
+<pre><code>from confluent_kafka import Producer
+
+p = Producer({
+    "bootstrap.servers": "kafka-0.kafka-headless.kafka.svc.cluster.local:9092",
+    "acks": "all",
+    "enable.idempotence": True,
+    "partitioner": "murmur2_random",   # same hashing as the Java client
+})
+
+def done(err, msg):
+    print(err or f"partition={msg.partition()} offset={msg.offset()}")
+
+p.produce("orders", key="cust-A", value='{"orderId":1001}', callback=done)
+p.flush()</code></pre></div></details>
+<details class="reveal"><summary>Go (kafka-go)</summary><div>
+<pre><code>w := &amp;kafka.Writer{
+    Addr:         kafka.TCP("kafka-0.kafka-headless.kafka.svc.cluster.local:9092"),
+    Topic:        "orders",
+    Balancer:     &amp;kafka.Murmur2Balancer{},   // Java-compatible hashing
+    RequiredAcks: kafka.RequireAll,            // acks=all
+}
+defer w.Close()
+
+err := w.WriteMessages(ctx, kafka.Message{
+    Key:   []byte("cust-A"),
+    Value: []byte(`{"orderId":1001}`),
+})</code></pre></div></details>
+
+<h2 class="reveal">Check yourself</h2>
+<div id="q3"></div>
+
+</main>
+<script src="../assets/js/app.js"></script>
+<script>
+(function () {
+  /* produce path stepper */
+  var bx = document.querySelectorAll('#pflow .fbox'), ar = document.querySelectorAll('#pflow .farr');
+  var map = [0, 1, 2, 3, 4, 4, 5, 4];
+  KT.stepper(document.getElementById('pctl'), [
+    { t: 'Create the record', d: '<p>Your code builds a <code>ProducerRecord(topic="orders", key="cust-A", value=...)</code> and calls <code>send()</code>. It returns immediately; the work happens on a background thread.</p>' },
+    { t: 'Serialize', d: '<p>Kafka only stores bytes, so the key and value serializers convert your strings, JSON or Avro objects into byte arrays.</p>' },
+    { t: 'Partition', d: '<p>The partitioner hashes the key to pick a partition. The producer already knows which broker leads that partition because it fetched cluster metadata from the bootstrap server.</p>' },
+    { t: 'Batch', d: '<p>The record joins an in-memory batch for that partition. The batch is sent when it fills (<code>batch.size</code>) or <code>linger.ms</code> expires. Optionally the batch is compressed.</p>' },
+    { t: 'Send to the partition leader', d: '<p>The batch travels to the <b>leader</b> broker for that partition. Producers only ever talk to leaders. The leader appends the records to its log and assigns <b>offsets</b>.</p>' },
+    { t: 'Leader writes to disk', d: '<p>The leader appends to the end of the partition\'s log file (sequential disk write, very fast) and holds the data in the OS page cache.</p>' },
+    { t: 'Followers replicate', d: '<p>Followers continuously fetch new data from the leader, like consumers do. Once the followers in the in-sync set have the batch, it is "committed". Module 4.</p>' },
+    { t: 'Acknowledge', d: '<p>The leader answers the producer according to <code>acks</code>: immediately (0 or 1) or after all in-sync replicas have it (all). The producer\'s callback receives the <b>partition and offset</b>, or an error to retry.</p>' }
+  ], function (i) {
+    var k = map[i];
+    bx.forEach(function (b, n) { b.classList.toggle('on', n === k); b.classList.toggle('seen', n < k); });
+    ar.forEach(function (a, n) { a.classList.toggle('on', n === k - 1); });
+  }, { ms: 3200 });
+
+  /* durability simulator */
+  var acks = 'all', busy = false;
+  document.getElementById('acks').onclick = function (e) { var v = e.target.getAttribute('data-v'); if (!v) return; acks = v; this.querySelectorAll('button').forEach(function (b) { b.classList.toggle('on', b === e.target); }); };
+  function $(id) { return document.getElementById(id); }
+  function reset() { ['b1', 'b2', 'b3'].forEach(function (id) { $(id).classList.remove('down'); }); $('b1').classList.add('lead'); $('b2').classList.remove('lead'); $('b3').classList.remove('lead');
+    ['h1', 'h2', 'h3'].forEach(function (id) { $(id).classList.remove('y'); }); $('b1').firstChild.textContent = 'Broker 1 (leader)'; $('pstat').textContent = 'idle'; $('phase').textContent = ''; }
+  $('go').onclick = function () {
+    if (busy) return; busy = true; reset(); var crash = $('crash').value, v = $('verdict'); v.className = 'verdict'; v.textContent = 'Running...';
+    var think = null, onB1 = false, onB2 = false, onB3 = false, b1down = false, step = [];
+    function say(t) { $('phase').textContent = t; }
+    step.push(function () { say('1. Producer sends the record to the leader (broker 1)'); $('pstat').textContent = 'sent, waiting' + (acks === '0' ? '' : ' for ack'); if (acks === '0') { think = true; $('pstat').textContent = 'assumes success (acks=0, no reply expected)'; } });
+    step.push(function () { say('2. Leader appends the record to its log'); $('h1').classList.add('y'); onB1 = true; if (acks === '1') { think = true; $('pstat').textContent = 'ack received from leader: SUCCESS'; } });
+    if (crash === 'A') {
+      step.push(function () { say('3. LEADER CRASHES before followers copied the record'); $('b1').classList.add('down'); b1down = true; $('b1').firstChild.textContent = 'Broker 1 (DOWN)'; $('b2').classList.add('lead'); $('b2').firstChild.textContent = 'Broker 2 (new leader)'; });
+      if (acks === 'all') {
+        step.push(function () { say('4. No ack arrived, so the producer retries against the new leader'); $('pstat').textContent = 'timeout, retrying'; });
+        step.push(function () { say('5. Retry succeeds on the new leader and is copied'); $('h2').classList.add('y'); $('h3').classList.add('y'); onB2 = onB3 = true; think = true; $('pstat').textContent = 'ack received: SUCCESS (after retry)'; });
+      }
+    } else {
+      step.push(function () { say('3. Followers fetch and copy the record'); $('h2').classList.add('y'); $('h3').classList.add('y'); onB2 = onB3 = true; if (acks === 'all') { think = true; $('pstat').textContent = 'ack received from all in-sync replicas: SUCCESS'; } });
+      if (crash === 'B') step.push(function () { say('4. Leader crashes now; followers already have the record'); $('b1').classList.add('down'); b1down = true; $('b1').firstChild.textContent = 'Broker 1 (DOWN)'; $('b2').classList.add('lead'); $('b2').firstChild.textContent = 'Broker 2 (new leader)'; });
+    }
+    step.push(function () {
+      var alive = (onB2 || onB3) || (onB1 && !b1down), lost = !alive;
+      if (lost && think) { v.className = 'verdict badv'; v.innerHTML = '<b>LOST, and nobody noticed.</b> The producer believes the write succeeded, but the only copy was on the broker that crashed. This is exactly the risk of acks=' + acks + '.'; }
+      else if (lost) { v.className = 'verdict badv'; v.innerHTML = '<b>Lost.</b> The message is gone.'; }
+      else { v.className = 'verdict good'; v.innerHTML = '<b>Safe.</b> The message survives on ' + ((onB2 && onB3) ? 'the remaining brokers' : 'a live broker') + (acks === 'all' && crash === 'A' ? ', because acks=all made the producer retry when no confirmation came.' : '.'); }
+      say('Done.'); busy = false;
+    });
+    var i = 0; (function run() { step[i](); i++; if (i < step.length) setTimeout(run, 1100); })();
+  };
+  reset();
+
+  /* batching model */
+  function calc() {
+    var rate = +$('rate').value, ling = +$('linger').value, cap = 80;
+    $('rateV').textContent = rate; $('lingerV').textContent = ling;
+    var timed = ling === 0 ? rate : Math.min(rate, 1000 / ling), reqs = Math.max(rate / cap, timed), per = rate / reqs;
+    $('reqs').textContent = Math.round(reqs).toLocaleString(); $('per').textContent = per.toFixed(1); $('lat').textContent = '+' + ling + ' ms';
+  }
+  $('rate').oninput = calc; $('linger').oninput = calc; calc();
+
+  KT.quiz(document.getElementById('q3'), 'm3', 'Quick check', [
+    { q: 'A producer uses acks=1. The leader writes the record, replies "success", then crashes before followers copy it. What happens?', o: ['The new leader has it', 'The record is lost, though the producer saw success', 'The producer retries and saves it', 'Kafka rebuilds it from the consumer'], a: 1, why: 'With acks=1 the leader replies before replication. If it dies first, the record exists nowhere else.' },
+    { q: 'What does enable.idempotence=true prevent?', o: ['Brokers crashing', 'Duplicates caused by producer retries', 'Slow consumers', 'Topic deletion'], a: 1, why: 'Sequence numbers let the broker discard a retried record it already stored.' },
+    { q: 'What raises throughput most for a high-volume producer?', o: ['linger.ms=0 and no compression', 'Larger batches (linger.ms > 0) plus compression', 'More consumers', 'Fewer brokers'], a: 1, why: 'Fewer, larger, compressed requests reduce overhead on both network and disk.' },
+    { q: 'A Java app and a Go app write key "cust-A" to the same topic and it lands in different partitions. Likely cause?', o: ['Kafka bug', 'The two clients use different hash functions', 'The topic has no replicas', 'Wrong acks'], a: 1, why: 'Different libraries default to different partitioners. Use a Java-compatible murmur2 option in the other client.' },
+    { q: 'Which broker does a producer send records to?', o: ['A random broker', 'The leader of the target partition', 'The controller', 'All brokers'], a: 1, why: 'Only the partition leader accepts writes. Followers just copy from the leader.' }
+  ]);
+})();
+</script>
+</body>
+</html>

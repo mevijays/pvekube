@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>1. What is Kafka and why it exists | Kafka Training</title>
+<script src="../assets/js/theme.js"></script>
+<link rel="stylesheet" href="../assets/css/style.css">
+<style>
+  .mix svg .direct, .mix svg .spoke, .mix svg .hubn { transition: opacity .7s; }
+  .mix svg.mode-direct .spoke, .mix svg.mode-direct .hubn { opacity: 0; }
+  .mix svg.mode-hub .direct { opacity: 0; }
+  .big { font: 700 2rem/1 var(--font); color: var(--accent); }
+  .cmp td:first-child { font-weight: 600; white-space: nowrap; }
+</style>
+</head>
+<body data-root=".." data-module="1">
+<aside class="side" id="side"></aside>
+<main class="main" id="main">
+
+<div class="kicker">Module 1 of 10 &middot; Concepts</div>
+<h1>What is Kafka and why it exists</h1>
+<p class="lead">Before any commands or jargon: what problem does Kafka solve, and what is it, in plain English?</p>
+<div class="meta"><span class="pill">15 minutes</span><span class="pill">no prerequisites</span><span class="pill">1 simulator</span></div>
+<div class="goals"><h4>By the end you can</h4><ul>
+  <li>Explain the problem Kafka solves in one sentence</li>
+  <li>Say what an event is, and why Kafka keeps events after they are read</li>
+  <li>Tell Kafka apart from a traditional message queue</li>
+  <li>Decide when Kafka is the right tool, and when it is not</li></ul></div>
+
+<h2 class="reveal">1. The problem: too many direct connections</h2>
+<p class="reveal">Imagine an online shop. When an order is placed, the <b>Orders</b> service must tell <b>Payments</b>, <b>Email</b> and <b>Analytics</b>. Next month a new <b>Fraud</b> service wants to know too. If every service calls every other service directly, each new service means new wiring in several places, and one slow service slows down everyone who calls it.</p>
+
+<div class="sim mix reveal">
+  <div class="sim-h">Simulator: direct connections vs a shared hub</div>
+  <div class="sim-b">
+    <div class="sim-ctl">
+      <span class="seg" id="mixseg"><button data-m="direct" class="on">Direct calls</button><button data-m="hub">Through Kafka</button></span>
+      <label>Services <input type="range" id="nsvc" min="2" max="20" value="4"> <span class="val" id="nval">4</span></label>
+    </div>
+    <svg id="mixsvg" class="mode-direct" viewBox="0 0 680 290" role="img" aria-label="Four services connected directly to each other, or connected through a single Kafka hub">
+      <g class="direct">
+        <line class="ln" x1="110" y1="55" x2="570" y2="55"/><line class="ln" x1="110" y1="235" x2="570" y2="235"/>
+        <line class="ln" x1="110" y1="55" x2="110" y2="235"/><line class="ln" x1="570" y1="55" x2="570" y2="235"/>
+        <line class="ln" x1="110" y1="55" x2="570" y2="235"/><line class="ln" x1="570" y1="55" x2="110" y2="235"/>
+      </g>
+      <g class="spoke">
+        <line class="ln" x1="110" y1="55" x2="300" y2="135"/><line class="ln" x1="570" y1="55" x2="380" y2="135"/>
+        <line class="ln" x1="110" y1="235" x2="300" y2="155"/><line class="ln" x1="570" y1="235" x2="380" y2="155"/>
+      </g>
+      <g class="hubn nd c-purple"><rect x="285" y="115" width="110" height="60" rx="12"/><text class="th" x="340" y="138" text-anchor="middle">Kafka</text><text class="ts" x="340" y="157" text-anchor="middle">shared event log</text></g>
+      <g class="nd c-gray"><rect x="50" y="35" width="120" height="40" rx="8"/><text class="t" x="110" y="55" text-anchor="middle" dominant-baseline="central">Orders</text></g>
+      <g class="nd c-gray"><rect x="510" y="35" width="120" height="40" rx="8"/><text class="t" x="570" y="55" text-anchor="middle" dominant-baseline="central">Payments</text></g>
+      <g class="nd c-gray"><rect x="50" y="215" width="120" height="40" rx="8"/><text class="t" x="110" y="235" text-anchor="middle" dominant-baseline="central">Email</text></g>
+      <g class="nd c-gray"><rect x="510" y="215" width="120" height="40" rx="8"/><text class="t" x="570" y="235" text-anchor="middle" dominant-baseline="central">Analytics</text></g>
+    </svg>
+    <div class="grid g2" style="margin:12px 0 0">
+      <div class="card"><div class="big" id="cdirect">6</div><div class="muted small">connections to build and maintain with direct calls: N &times; (N&minus;1) / 2</div></div>
+      <div class="card"><div class="big" id="chub">4</div><div class="muted small">connections with a hub: each service only talks to Kafka, N of them</div></div>
+    </div>
+  </div>
+</div>
+<p class="reveal">With a hub, <b>Orders just publishes "an order was placed"</b> and moves on. It does not know or care who listens. Adding the Fraud service later means one new subscriber and zero changes to Orders. That separation is called <span class="term" title="Producers and consumers do not know about each other">decoupling</span>, and it is the main reason Kafka exists.</p>
+
+<h2 class="reveal">2. So what is Kafka?</h2>
+<p class="reveal"><b>Apache Kafka is a distributed event streaming platform.</b> Translated: a cluster of servers that receives streams of events from applications, stores them safely in order, and lets many other applications read them, now or later.</p>
+<div class="callout analogy reveal"><strong class="ttl">Analogy</strong>Think of a <b>shared notebook</b> where people only ever write at the bottom, never erasing or editing earlier lines. Every line gets a line number. Anyone can read it, each reader keeps their own bookmark, and readers can re-read from any line. Kafka is that notebook, split across many servers so it never gets lost and never runs out of room.</div>
+
+<h3 class="reveal">What is an "event"?</h3>
+<p class="reveal">An <b>event</b> (Kafka calls it a <b>record</b> or <b>message</b>) is a small fact about something that happened, with a timestamp. It is never edited afterward, because the past does not change.</p>
+<pre class="reveal" data-nocopy><code><span class="c">// An event: "order 1001 was placed by customer cust-A at 10:42:07"</span>
+{
+  <span class="k">"key"</span>:   "cust-A",
+  <span class="k">"value"</span>: { "orderId": 1001, "item": "keyboard", "amount": 49.90 },
+  <span class="k">"timestamp"</span>: "2026-11-22T10:42:07Z"
+}</code></pre>
+
+<h2 class="reveal">3. Kafka vs a traditional message queue</h2>
+<p class="reveal">A classic queue (like a post office box) <b>hands each message to one reader and then throws it away</b>. Kafka is different: it is a <b>log</b>. Messages stay for a period you choose (days, weeks, forever), and any number of readers can read them independently.</p>
+<div class="tablewrap reveal"><table class="cmp">
+  <tr><th></th><th>Traditional queue</th><th>Kafka</th></tr>
+  <tr><td>After a message is read</td><td>Deleted</td><td>Stays until retention expires</td></tr>
+  <tr><td>Several apps need the same data</td><td>Copy it into several queues</td><td>Each app reads the same log independently</td></tr>
+  <tr><td>Replay old data</td><td>Not possible</td><td>Yes, rewind your bookmark (offset)</td></tr>
+  <tr><td>Bad deploy? Reprocess last 2 hours</td><td>Data is gone</td><td>Reset offset and replay</td></tr>
+  <tr><td>Scale</td><td>Limited by one queue</td><td>Split into partitions across many servers</td></tr>
+  <tr><td>Ordering</td><td>Usually global, which limits throughput</td><td>Guaranteed inside one partition</td></tr>
+</table></div>
+
+<h2 class="reveal">4. Where Kafka is used</h2>
+<div class="grid g3 reveal">
+  <div class="card c-purple"><span class="tag">Event-driven apps</span><p style="margin-top:8px">Microservices react to events like OrderPlaced instead of calling each other.</p></div>
+  <div class="card c-teal"><span class="tag">Activity tracking</span><p style="margin-top:8px">Clicks, searches and page views flow to analytics in real time.</p></div>
+  <div class="card c-coral"><span class="tag">Log and metric pipelines</span><p style="margin-top:8px">Collect logs from thousands of servers into one durable stream.</p></div>
+  <div class="card c-blue"><span class="tag">Change data capture</span><p style="margin-top:8px">Stream every database change to search indexes, caches and warehouses.</p></div>
+  <div class="card c-amber"><span class="tag">IoT and telemetry</span><p style="margin-top:8px">Millions of sensor readings per second, buffered safely.</p></div>
+  <div class="card c-pink"><span class="tag">Stream processing</span><p style="margin-top:8px">Compute running totals, fraud scores or alerts while data is still flowing.</p></div>
+</div>
+
+<h2 class="reveal">5. What Kafka promises</h2>
+<div class="grid g2 reveal">
+  <div class="card"><h4>Durable</h4><p>Messages are written to disk and copied to other servers (replication), so they survive crashes. Module 4.</p></div>
+  <div class="card"><h4>Scalable</h4><p>Topics are split into partitions spread over brokers. Add partitions and brokers to grow. Module 2.</p></div>
+  <div class="card"><h4>Ordered where it matters</h4><p>Messages in one partition are read in exactly the order they were written. Module 3.</p></div>
+  <div class="card"><h4>Fast</h4><p>Sequential disk writes and batching give hundreds of thousands of messages per second per broker. Module 6.</p></div>
+</div>
+
+<h2 class="reveal">6. When Kafka is not the right tool</h2>
+<div class="callout warn reveal"><strong class="ttl">Be honest about it</strong>
+<ul>
+<li><b>Simple request/response</b> ("give me this user's profile now"): use an HTTP API.</li>
+<li><b>Tiny scale</b> (a few messages a minute between two apps): a simple queue or database table is easier to run.</li>
+<li><b>Large files</b> (videos, 500 MB PDFs): store the file in object storage and send only its address through Kafka.</li>
+<li><b>You need per-message routing rules or priorities:</b> classic brokers like RabbitMQ are a better fit.</li></ul></div>
+
+<h2 class="reveal">7. The whole story in five steps</h2>
+<p class="reveal">This is the map of the rest of the course. Step through it, then each later module zooms into one box.</p>
+<div class="sim reveal">
+  <div class="sim-h">Walkthrough: life of one message</div>
+  <div class="sim-b">
+    <div class="flow" id="story">
+      <div class="fbox c-gray"><b>Producer</b><small>Orders service</small></div><div class="farr">&rarr;</div>
+      <div class="fbox c-purple"><b>Topic</b><small>orders</small></div><div class="farr">&rarr;</div>
+      <div class="fbox c-purple"><b>Partition</b><small>one of three logs</small></div><div class="farr">&rarr;</div>
+      <div class="fbox c-teal"><b>Replicas</b><small>copies on 3 brokers</small></div><div class="farr">&rarr;</div>
+      <div class="fbox c-coral"><b>Consumers</b><small>read at own pace</small></div>
+    </div>
+    <div id="storyctl"></div>
+  </div>
+</div>
+
+<h2 class="reveal">Check yourself</h2>
+<div id="q1"></div>
+
+</main>
+<script src="../assets/js/app.js"></script>
+<script>
+(function () {
+  var svg = document.getElementById('mixsvg'), n = document.getElementById('nsvc');
+  document.getElementById('mixseg').addEventListener('click', function (e) {
+    var m = e.target.getAttribute('data-m'); if (!m) return;
+    svg.setAttribute('class', 'mode-' + m);
+    this.querySelectorAll('button').forEach(function (b) { b.classList.toggle('on', b === e.target); });
+  });
+  function calc() {
+    var v = +n.value; document.getElementById('nval').textContent = v;
+    document.getElementById('cdirect').textContent = v * (v - 1) / 2;
+    document.getElementById('chub').textContent = v;
+  }
+  n.addEventListener('input', calc); calc();
+
+  var boxes = document.querySelectorAll('#story .fbox'), arrs = document.querySelectorAll('#story .farr');
+  KT.stepper(document.getElementById('storyctl'), [
+    { t: 'A service has something to report', d: '<p>The Orders service finishes taking an order. It creates an event: "order 1001 placed". This is the <b>producer</b> side. Module 3.</p>' },
+    { t: 'It publishes to a topic', d: '<p>A <b>topic</b> is a named stream, like a folder called <code>orders</code>. The producer does not say who should read it. It just publishes.</p>' },
+    { t: 'The topic is split into partitions', d: '<p>The topic is divided into <b>partitions</b>, each an ordered log. The message key (customer id) decides which partition, so one customer\'s events stay in order. Module 2.</p>' },
+    { t: 'Each partition is copied', d: '<p>Every partition is stored on several brokers (<b>replication factor</b> 3 means three copies). If one broker dies, another copy takes over. Module 4.</p>' },
+    { t: 'Consumers read at their own pace', d: '<p>Payments, Email and Analytics each read the log with their own bookmark (<b>offset</b>). Reading does not delete anything. Module 5.</p>' }
+  ], function (i) {
+    boxes.forEach(function (b, k) { b.classList.toggle('on', k === i); b.classList.toggle('seen', k < i); });
+    arrs.forEach(function (a, k) { a.classList.toggle('on', k === i - 1); });
+  });
+
+  KT.quiz(document.getElementById('q1'), 'm1', 'Quick check', [
+    { q: 'What is the main benefit of putting Kafka between your services?', o: ['It makes every service faster', 'Producers and consumers no longer need to know about each other', 'It removes the need for databases', 'It encrypts all traffic'], a: 1, why: 'Decoupling: the producer publishes once; any number of consumers can be added later without changing it.' },
+    { q: 'A consumer reads a message from Kafka. What happens to that message?', o: ['It is deleted', 'It is moved to a "read" folder', 'It stays until the retention period expires', 'It is sent back to the producer'], a: 2, why: 'Kafka is a log, not a queue. Reading never deletes. Retention (time or size) controls removal.' },
+    { q: 'Which is a poor use of Kafka?', o: ['Streaming millions of sensor readings', 'Fetching one user profile when a web page loads', 'Capturing database changes', 'Collecting logs from many servers'], a: 1, why: 'Request/response lookups are better served by a normal API or database. Kafka is for streams of events.' },
+    { q: 'Why can several teams read the same topic without interfering?', o: ['Kafka copies the topic once per team', 'Each consumer group keeps its own position (offset) in the same log', 'Consumers take turns', 'Only one team can read at a time'], a: 1, why: 'The data is stored once. Each consumer group tracks its own bookmark.' }
+  ]);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>10. Mastery: quiz, cheat sheet, glossary | Kafka Training</title>
+<script src="../assets/js/theme.js"></script>
+<link rel="stylesheet" href="../assets/css/style.css">
+<style>
+  .filter { width: 100%; max-width: 520px; padding: 10px 14px; font-size: 1rem; margin-bottom: 14px; }
+  .cs h3 { margin-top: 1.4em; } .cs td:first-child { font-family: var(--mono); font-size: .8rem; word-break: break-word; width: 62%; }
+  .gl dt { font-weight: 600; margin-top: 12px; color: var(--accent); } .gl dd { margin: 2px 0 0; }
+  .sumtbl td, .sumtbl th { padding: 7px 12px; }
+  .one { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+  .one div { border: 1px solid var(--s); background: var(--f); color: var(--t); border-radius: 12px; padding: 12px 14px; font-size: .9rem; }
+  .one b { display: block; margin-bottom: 4px; }
+</style>
+</head>
+<body data-root=".." data-module="10">
+<aside class="side" id="side"></aside>
+<main class="main" id="main">
+
+<div class="kicker">Module 10 of 10 &middot; Mastery</div>
+<h1>Mastery: quiz, cheat sheet, glossary</h1>
+<p class="lead">Prove it to yourself with a final exam, keep the cheat sheet beside you while you work, and pick a capstone challenge to cement the skills on your real cluster.</p>
+<div class="meta"><span class="pill">30 minutes</span><span class="pill">15-question exam</span><span class="pill">searchable cheat sheet</span></div>
+
+<h2 class="reveal">1. Your progress</h2>
+<div class="card reveal"><div id="summary"></div></div>
+
+<h2 class="reveal">2. The whole of Kafka on one page</h2>
+<div class="one reveal">
+  <div class="c-purple"><b>Data model</b>Records go to topics. Topics are split into partitions (ordered logs). Each record has an offset inside its partition. Same key, same partition.</div>
+  <div class="c-teal"><b>Durability</b>Each partition has RF copies on different brokers: one leader, the rest followers. ISR = copies that are caught up. <code>acks=all</code> plus <code>min.insync.replicas=2</code> with RF 3 survives one broker loss.</div>
+  <div class="c-coral"><b>Consumption</b>Consumers pull. A consumer group shares partitions (one owner each); groups are independent. Position = committed offset; lag = log end minus committed.</div>
+  <div class="c-amber"><b>Storage</b>Partitions are folders of segment files. Retention deletes whole closed segments by time or size; compaction keeps the latest value per key.</div>
+  <div class="c-blue"><b>Control plane</b>KRaft controllers (a Raft quorum) track topics, leaders and ISR. They need a majority alive.</div>
+  <div class="c-gray"><b>On Kubernetes</b>StatefulSet (identity + disk), headless service (per-broker DNS), anti-affinity (one broker per node), PDB (never lose two at once).</div>
+</div>
+
+<h2 class="reveal">3. Final exam</h2>
+<p class="reveal">15 questions across the whole course. Answers are checked immediately and explained. Your best score is saved.</p>
+<div id="final"></div>
+
+<h2 class="reveal">4. Command cheat sheet</h2>
+<p class="reveal">Search by task or command. Commands assume you are inside the <code>kafka-client</code> pod with <code>PATH</code> set (Lab 0); <code>$BS</code> holds the three brokers.</p>
+<input class="filter reveal" id="flt" type="text" placeholder="Filter: e.g. lag, retention, partitions, reset, kubectl">
+<div class="cs" id="cs"></div>
+
+<h2 class="reveal">5. Capstone challenges</h2>
+<p class="reveal">Pick any. They go beyond the guided labs: you design the steps.</p>
+<div class="card reveal">
+  <label class="check"><input type="checkbox" data-id="cap1"><div><b>Design a topic.</b> Create <code>payments</code> with 6 partitions, RF 3 and 1 hour retention. Prove all three settings with <code>--describe</code> and <code>kafka-configs.sh</code>.</div></label>
+  <label class="check"><input type="checkbox" data-id="cap2"><div><b>Write real clients.</b> In your language (Java, Python or Go samples in modules 3 and 5), run a producer and a consumer as pods in the cluster. Confirm the same key always lands in the same partition.</div></label>
+  <label class="check"><input type="checkbox" data-id="cap3"><div><b>Rebalance on purpose.</b> Run two consumers in one group, then kill one. Watch the other take over (<code>--describe --group</code> and its <code>--state</code>).</div></label>
+  <label class="check"><input type="checkbox" data-id="cap4"><div><b>Create lag and cure it.</b> Produce faster than a deliberately slow consumer reads. Observe LAG climb, then fix it two different ways.</div></label>
+  <label class="check"><input type="checkbox" data-id="cap5"><div><b>Prove no loss.</b> Send 10,000 numbered messages with <code>acks=all</code> while deleting a broker pod. Count what the consumer receives: none missing (duplicates are possible: why?).</div></label>
+  <label class="check"><input type="checkbox" data-id="cap6"><div><b>Rolling restart.</b> Run the safe rolling-restart loop from module 9 while a producer is running. Check the producer saw no errors.</div></label>
+  <label class="check"><input type="checkbox" data-id="cap7"><div><b>Predict, then verify.</b> Before running it, write down what happens with <code>min.insync.replicas=3</code> when one broker dies. Test your prediction.</div></label>
+  <label class="check"><input type="checkbox" data-id="cap8"><div><b>Teach it.</b> Explain partitions, replication and consumer groups to a colleague using only a whiteboard. If you get stuck, revisit that module's simulator.</div></label>
+</div>
+
+<h2 class="reveal">6. Where to go next</h2>
+<div class="grid g3 reveal">
+  <div class="card"><h4>Kafka Connect</h4><p>Move data between Kafka and databases, object storage or search with ready-made connectors and no code.</p></div>
+  <div class="card"><h4>Schema Registry</h4><p>Version your message formats (Avro, Protobuf, JSON Schema) so producers and consumers can evolve safely.</p></div>
+  <div class="card"><h4>Stream processing</h4><p>Kafka Streams, ksqlDB or Flink: joins, windows and aggregations over live topics.</p></div>
+  <div class="card"><h4>Security</h4><p>TLS encryption, SASL authentication and ACLs. Required before any shared or production use.</p></div>
+  <div class="card"><h4>Observability</h4><p>JMX exporter into Prometheus and Grafana, with alerts on offline/under-replicated partitions, lag and disk.</p></div>
+  <div class="card"><h4>An operator</h4><p>Strimzi automates rolling updates, certificates, scaling and topic/user management declaratively in Kubernetes.</p></div>
+</div>
+
+<h2 class="reveal">7. Glossary</h2>
+<input class="filter reveal" id="gflt" type="text" placeholder="Search terms: e.g. offset, ISR, rebalance">
+<dl class="gl" id="gl"></dl>
+
+</main>
+<script src="../assets/js/app.js"></script>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+
+  /* progress summary */
+  var totals = { m1: 4, m2: 5, m3: 5, m4: 5, m5: 6, m6: 5, m7: 5, m9: 5, final: 15 }, done = KT.store.get('done', {}), t = '<div class="tablewrap" style="margin:0"><table class="sumtbl"><tr><th>Module</th><th>Complete</th><th>Quiz best</th></tr>';
+  KT.MODULES.forEach(function (m) {
+    var key = m.n === 10 ? 'final' : 'm' + m.n, q = KT.store.get('quiz-' + key, null), tot = totals[key];
+    t += '<tr><td>' + m.n + '. ' + m.t + '</td><td>' + (done[m.n] ? '&#10003;' : '-') + '</td><td>' + (tot ? (q === null ? '-' : q + ' / ' + tot) : 'labs') + '</td></tr>';
+  });
+  $('summary').innerHTML = t + '</table></div><p class="small muted" style="margin:10px 0 0">Scores update when you revisit this page. Retry any quiz to improve it.</p>';
+
+  /* final exam */
+  KT.quiz($('final'), 'final', 'Final exam (15 questions)', [
+    { q: 'What best describes Kafka?', o: ['A relational database', 'A distributed, durable event log that many applications can write to and read from', 'A web server', 'A job scheduler'], a: 1, why: 'Kafka stores streams of events as replicated, partitioned logs that producers append to and consumers read independently.' },
+    { q: 'A consumer reads a record. What happens to it?', o: ['It is deleted', 'It stays until retention expires', 'It is copied to a read-only topic', 'It is returned to the producer'], a: 1, why: 'Reading never deletes in Kafka; only retention or compaction removes data.' },
+    { q: 'A topic has 3 partitions and replication factor 3. How many partition replicas exist in total?', o: ['3', '6', '9', '12'], a: 2, why: '3 partitions x 3 copies = 9 replicas, spread across the brokers.' },
+    { q: 'Where does Kafka guarantee record order?', o: ['Across the whole topic', 'Within a single partition', 'Within a consumer group', 'Within a broker'], a: 1, why: 'Order is per partition. Use a key so related records share a partition.' },
+    { q: 'Which expression picks the partition for a keyed record (default Java partitioner)?', o: ['random()', 'murmur2(key) % numPartitions', 'key.length % brokers', 'offset % partitions'], a: 1, why: 'A hash of the key modulo the partition count. The same key maps to the same partition while the count is unchanged.' },
+    { q: 'RF=3, min.insync.replicas=2, acks=all. One broker fails. Producers...', o: ['Get errors', 'Keep writing normally with no data loss', 'Lose recent data', 'Must be restarted'], a: 1, why: 'Two in-sync replicas remain, which satisfies the minimum.' },
+    { q: 'Same settings, but two brokers fail. What happens to a producer write?', o: ['It is accepted and stored once', 'It is refused with NOT_ENOUGH_REPLICAS; previously stored data is safe', 'It is silently dropped', 'Kafka raises RF automatically'], a: 1, why: 'One in-sync replica is below the minimum of 2, so Kafka refuses rather than risk the data.' },
+    { q: 'Why can only ISR members be elected leader?', o: ['They have the fastest CPUs', 'They are guaranteed to hold all committed records', 'They are newer', 'Kafka picks randomly'], a: 1, why: 'Promoting an out-of-sync replica would lose committed data.' },
+    { q: 'A group has 8 consumers on a topic with 6 partitions. What happens?', o: ['All 8 read', '6 read and 2 are idle', 'Kafka creates 2 partitions', 'Two consumers share a partition'], a: 1, why: 'One partition goes to exactly one consumer in a group; extras are idle standbys.' },
+    { q: 'Consumer lag is growing. Which is NOT a sensible remedy?', o: ['Add consumers (up to the partition count)', 'Speed up the message handler', 'Lower min.insync.replicas', 'Check for a rebalance loop'], a: 2, why: 'min.insync.replicas affects producer durability, not consumer speed.' },
+    { q: 'Which ordering gives at-least-once delivery?', o: ['Commit then process', 'Process then commit', 'Never commit', 'Commit twice'], a: 1, why: 'A crash between processing and commit causes redelivery, never loss.' },
+    { q: 'What does retention delete?', o: ['Individual old records', 'Whole closed segments (never the active one)', 'The oldest partition', 'Records every group has read'], a: 1, why: 'Segment files are the unit of deletion; the active segment is exempt until it rolls.' },
+    { q: 'What does log compaction keep?', o: ['The newest 7 days of data', 'The latest record per key', 'Only unread records', 'Only null values'], a: 1, why: 'Compaction retains the most recent value for each key with offsets unchanged.' },
+    { q: 'A KRaft cluster has 3 controllers. How many can be lost while metadata changes still work?', o: ['0', '1', '2', '3'], a: 1, why: 'A majority (2 of 3) must remain.' },
+    { q: 'During a rolling restart of the three Kafka pods, what must you wait for between restarts?', o: ['Nothing: Ready is enough', 'The restarted broker to be back in the ISR (no under-replicated partitions)', 'All consumers to disconnect', 'The topic to be recreated'], a: 1, why: 'Ready only means the port is open. Restarting the next broker before the ISR is full can drop below min.insync.replicas.' }
+  ]);
+
+  /* cheat sheet */
+  var CS = [
+    ['Topics', [
+      ['kafka-topics.sh --bootstrap-server $BS --list', 'List topics'],
+      ['kafka-topics.sh --bootstrap-server $BS --create --topic T --partitions 3 --replication-factor 3', 'Create a topic'],
+      ['kafka-topics.sh --bootstrap-server $BS --describe --topic T', 'Partitions, leaders, replicas, ISR'],
+      ['kafka-topics.sh --bootstrap-server $BS --alter --topic T --partitions 6', 'Add partitions (increase only)'],
+      ['kafka-topics.sh --bootstrap-server $BS --delete --topic T', 'Delete a topic'],
+      ['kafka-topics.sh --bootstrap-server $BS --describe --under-replicated-partitions', 'Redundancy reduced (empty is good)'],
+      ['kafka-topics.sh --bootstrap-server $BS --describe --under-min-isr-partitions', 'Partitions where acks=all writes are refused'],
+      ['kafka-topics.sh --bootstrap-server $BS --describe --unavailable-partitions', 'Partitions with no leader (offline)']]],
+    ['Produce and consume', [
+      ['kafka-console-producer.sh --bootstrap-server $BS --topic T', 'Type messages, Ctrl-D to end'],
+      ['kafka-console-producer.sh --bootstrap-server $BS --topic T --property parse.key=true --property key.separator=:', 'Keyed messages: key:value'],
+      ['kafka-console-producer.sh --bootstrap-server $BS --topic T --producer-property acks=all', 'Producer with a client setting'],
+      ['kafka-console-consumer.sh --bootstrap-server $BS --topic T --from-beginning', 'Read everything retained'],
+      ['kafka-console-consumer.sh --bootstrap-server $BS --topic T --property print.key=true --property print.partition=true --property print.offset=true', 'Show key, partition, offset'],
+      ['kafka-console-consumer.sh --bootstrap-server $BS --topic T --partition 0 --offset 2 --max-messages 5', 'Read one partition from an offset'],
+      ['kafka-console-consumer.sh --bootstrap-server $BS --topic T --group G --timeout-ms 5000', 'Read as a group; stop after 5 s of silence'],
+      ['kafka-get-offsets.sh --bootstrap-server $BS --topic T --time -2', 'Earliest offsets (use -1 for latest)']]],
+    ['Consumer groups and lag', [
+      ['kafka-consumer-groups.sh --bootstrap-server $BS --list', 'All groups'],
+      ['kafka-consumer-groups.sh --bootstrap-server $BS --describe --group G', 'Offsets and LAG per partition'],
+      ['kafka-consumer-groups.sh --bootstrap-server $BS --describe --group G --state', 'Group state and coordinator'],
+      ['kafka-consumer-groups.sh --bootstrap-server $BS --describe --group G --members --verbose', 'Members and their partitions'],
+      ['kafka-consumer-groups.sh --bootstrap-server $BS --group G --topic T --reset-offsets --to-earliest --dry-run', 'Preview a rewind (use --execute to apply, group must be idle)'],
+      ['kafka-consumer-groups.sh --bootstrap-server $BS --delete --group G', 'Delete an idle group']]],
+    ['Configuration and retention', [
+      ['kafka-configs.sh --bootstrap-server $BS --entity-type topics --entity-name T --describe', 'Topic overrides'],
+      ['kafka-configs.sh --bootstrap-server $BS --entity-type topics --entity-name T --alter --add-config retention.ms=86400000', 'Set retention to 1 day'],
+      ['kafka-configs.sh --bootstrap-server $BS --entity-type topics --entity-name T --alter --delete-config retention.ms', 'Remove an override'],
+      ['kafka-configs.sh --bootstrap-server $BS --entity-type brokers --entity-name 0 --describe --all', 'Effective broker settings'],
+      ['kafka-configs.sh --bootstrap-server $BS --entity-type broker-loggers --entity-name 0 --alter --add-config kafka.server.ReplicaFetcherThread=DEBUG', 'Change a log level live']]],
+    ['Cluster health and internals', [
+      ['kafka-broker-api-versions.sh --bootstrap-server $BS | grep -E "^kafka"', 'Which brokers are registered'],
+      ['kafka-metadata-quorum.sh --bootstrap-server $BS describe --status', 'Controller leader, voters'],
+      ['kafka-metadata-quorum.sh --bootstrap-server $BS describe --replication', 'Controller replication lag'],
+      ['kafka-log-dirs.sh --bootstrap-server $BS --describe --topic-list T', 'Disk used per partition per broker (JSON)'],
+      ['kafka-leader-election.sh --bootstrap-server $BS --election-type preferred --all-topic-partitions', 'Return leaders to preferred brokers'],
+      ['kafka-dump-log.sh --print-data-log --files /var/lib/kafka/data/T-0/00000000000000000000.log', 'Read a segment file (run on a broker)'],
+      ['kafka-producer-perf-test.sh --topic T --num-records 200000 --record-size 200 --throughput -1 --producer-props bootstrap.servers=$BS acks=all', 'Producer throughput test'],
+      ['kafka-consumer-perf-test.sh --bootstrap-server $BS --topic T --messages 200000 --group perf', 'Consumer throughput test']]],
+    ['Kubernetes (on your Mac)', [
+      ['kubectl --context devk8s-admin@devk8s -n kafka get pods -o wide', 'Brokers and the nodes they run on'],
+      ['kubectl -n kafka exec -it kafka-client -- bash', 'Shell with every Kafka tool'],
+      ['kubectl -n kafka logs kafka-0 --tail=100', 'Recent broker log (add --previous for a crashed one)'],
+      ['kubectl -n kafka describe pod kafka-0', 'Events, restarts, OOMKilled'],
+      ['kubectl -n kafka delete pod kafka-2', 'Kill a broker (it is recreated)'],
+      ['kubectl -n kafka scale sts kafka --replicas=1', 'Failure drill: keep only kafka-0. Always restore to 3.'],
+      ['kubectl -n kafka get pvc', 'Volumes and sizes'],
+      ['kubectl -n kafka exec kafka-0 -- df -h /var/lib/kafka/data', 'Disk used on a broker'],
+      ['kubectl -n kafka rollout status sts/kafka', 'Wait for a rollout'],
+      ['kubectl -n kafka get events --sort-by=.lastTimestamp', 'Recent cluster events']]]
+  ];
+  function esc(x) { return x.replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
+  var csEl = $('cs');
+  CS.forEach(function (g) {
+    var h = '<div class="csg"><h3>' + g[0] + '</h3><div class="tablewrap"><table>';
+    g[1].forEach(function (r) { h += '<tr data-s="' + esc((r[0] + ' ' + r[1]).toLowerCase()).replace(/"/g, '') + '"><td><code>' + esc(r[0]) + '</code></td><td>' + esc(r[1]) + '</td></tr>'; });
+    csEl.insertAdjacentHTML('beforeend', h + '</table></div></div>');
+  });
+  $('flt').addEventListener('input', function () {
+    var q = this.value.toLowerCase().trim();
+    document.querySelectorAll('#cs tr').forEach(function (r) { r.style.display = !q || r.getAttribute('data-s').indexOf(q) >= 0 ? '' : 'none'; });
+    document.querySelectorAll('.csg').forEach(function (g) { var any = [].some.call(g.querySelectorAll('tr'), function (r) { return r.style.display !== 'none'; }); g.style.display = any ? '' : 'none'; });
+  });
+
+  /* glossary */
+  var GL = [
+    ['Acks', 'Producer setting for when a send counts as successful: 0 (never wait), 1 (leader wrote it), all (every in-sync replica has it).'],
+    ['Batch', 'A group of records for one partition sent and stored together. Improves throughput.'],
+    ['Bootstrap server', 'The first broker address(es) a client contacts to learn about the whole cluster.'],
+    ['Broker', 'A Kafka server. Stores partitions on disk and serves producers and consumers.'],
+    ['Cluster', 'A set of brokers (and controllers) working together.'],
+    ['Commit (offset)', 'Saving a consumer group\'s position so it can resume after a restart.'],
+    ['Compaction', 'A cleanup mode that keeps only the latest record for each key.'],
+    ['Consumer', 'A program that reads records from topics.'],
+    ['Consumer group', 'Consumers sharing a group.id. Each partition is read by exactly one member; different groups are independent.'],
+    ['Controller', 'A node in the KRaft quorum that stores cluster metadata and decides leaders. One is active; the rest are standbys.'],
+    ['Coordinator (group)', 'The broker that manages one consumer group: membership, heartbeats and rebalances.'],
+    ['Event / record / message', 'One unit of data: key, value, headers and timestamp, stored at an offset in a partition.'],
+    ['Follower', 'A replica that copies from the leader and does not serve client traffic.'],
+    ['Heartbeat', 'A periodic "I am alive" signal from a consumer to its group coordinator.'],
+    ['High watermark', 'The highest offset replicated to every in-sync replica. Consumers only read below it.'],
+    ['Idempotent producer', 'A producer whose retries cannot create duplicates, thanks to per-partition sequence numbers.'],
+    ['ISR (in-sync replicas)', 'The leader plus the followers that are fully caught up. Only these may become leader.'],
+    ['Key', 'Optional record field that decides the partition. Same key, same partition, ordered.'],
+    ['KRaft', 'Kafka\'s built-in Raft-based metadata system. Replaces ZooKeeper.'],
+    ['Lag', 'Log end offset minus a group\'s committed offset: how far behind it is.'],
+    ['Leader', 'The one replica of a partition that handles all reads and writes.'],
+    ['Log end offset', 'The offset the next record will receive (the latest position).'],
+    ['min.insync.replicas', 'With acks=all, the minimum number of in-sync replicas needed for a write to succeed.'],
+    ['Offset', 'A record\'s sequential position within its partition. Never reused.'],
+    ['Partition', 'An ordered, append-only log. A topic is split into partitions for scale and parallelism.'],
+    ['Partitioner', 'The producer logic that picks a partition for each record.'],
+    ['Producer', 'A program that writes records to topics.'],
+    ['Rebalance', 'Redistributing partitions among the members of a consumer group.'],
+    ['Replica', 'One copy of a partition on one broker.'],
+    ['Replication factor (RF)', 'How many replicas each partition has.'],
+    ['Retention', 'How long (or how much) data Kafka keeps before deleting old segments.'],
+    ['Segment', 'One file chunk of a partition\'s log. Retention deletes whole closed segments.'],
+    ['Serializer / deserializer', 'Code that turns objects into bytes (producer) and bytes back into objects (consumer).'],
+    ['Session timeout', 'How long a group may go without a heartbeat from a member before declaring it dead.'],
+    ['Tombstone', 'A record with a key and null value, meaning "delete this key" in a compacted topic.'],
+    ['Topic', 'A named stream of records, split into partitions.'],
+    ['Transaction (exactly-once)', 'Atomically writing output records and committing input offsets, so a crash neither loses nor duplicates results inside Kafka.'],
+    ['Unclean leader election', 'Letting an out-of-sync replica become leader. Restores availability but loses data. Off by default.'],
+    ['Under-replicated partition', 'A partition with fewer in-sync replicas than its replication factor. A warning sign.']
+  ];
+  var gl = $('gl');
+  GL.forEach(function (g) { gl.insertAdjacentHTML('beforeend', '<div class="gi" data-s="' + esc((g[0] + ' ' + g[1]).toLowerCase()).replace(/"/g, '') + '"><dt>' + g[0] + '</dt><dd>' + esc(g[1]) + '</dd></div>'); });
+  $('gflt').addEventListener('input', function () { var q = this.value.toLowerCase().trim(); document.querySelectorAll('.gi').forEach(function (r) { r.style.display = !q || r.getAttribute('data-s').indexOf(q) >= 0 ? '' : 'none'; }); });
+})();
+</script>
+</body>
+</html>

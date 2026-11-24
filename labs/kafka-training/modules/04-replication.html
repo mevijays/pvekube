@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>4. Replication and broker failure | Kafka Training</title>
+<script src="../assets/js/theme.js"></script>
+<link rel="stylesheet" href="../assets/css/style.css">
+<style>
+  .rep { position: relative; } .rep .role { margin-left: 8px; }
+  .rep .cells { clear: both; } .bk .cells { min-height: 24px; }
+  .desc { font: .8rem/1.7 var(--mono); background: var(--code-bg); color: var(--code-text); border-radius: 10px; padding: 10px 14px; margin-top: 12px; overflow-x: auto; white-space: pre; }
+  .desc .bad { color: #ff8a80; } .desc .warn { color: #ffcb6b; } .desc .ok { color: #c3e88d; }
+  .hw { display: grid; grid-template-columns: 110px 1fr; gap: 8px 12px; align-items: center; font-size: .85rem; }
+  .hw .cells { margin: 0; } .hw .cell { cursor: default; }
+  .calc { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+  #gboard .bk { min-height: 110px; }
+</style>
+</head>
+<body data-root=".." data-module="4">
+<aside class="side" id="side"></aside>
+<main class="main" id="main">
+
+<div class="kicker">Module 4 of 10 &middot; The data journey</div>
+<h1>Replication and broker failure</h1>
+<p class="lead">Servers die. Disks fail. Kafka's answer is to keep several copies of every partition on different brokers and to switch to a copy automatically. This module shows exactly how, and lets you break a cluster on purpose.</p>
+<div class="meta"><span class="pill">30 minutes</span><span class="pill">full cluster simulator</span><span class="pill">real output from your lab</span></div>
+<div class="goals"><h4>By the end you can</h4><ul>
+<li>Explain leader, follower, replication factor and ISR</li>
+<li>Predict what happens when 1, 2 or 3 brokers fail</li>
+<li>Explain how <code>acks</code> and <code>min.insync.replicas</code> work together</li>
+<li>Read the <code>Leader / Replicas / Isr</code> columns of a real topic description</li></ul></div>
+
+<h2 class="reveal">1. The idea: keep copies</h2>
+<p class="reveal">The <b>replication factor (RF)</b> says how many copies of each partition exist. With RF=3 every partition lives on 3 different brokers. Your lab topics use RF=3.</p>
+<div class="callout analogy reveal"><strong class="ttl">Analogy</strong>One person keeps the master notebook (the <b>leader</b>) and everyone writes in it through them. Two assistants (the <b>followers</b>) keep photocopies and update them every few seconds. If the master person falls ill, an assistant with an up-to-date copy takes over, and nothing is lost.</div>
+<div class="grid g3 reveal">
+<div class="card c-purple"><span class="tag">Leader</span><p style="margin-top:8px">One replica per partition. <b>All</b> reads and writes go here.</p></div>
+<div class="card c-teal"><span class="tag">Follower</span><p style="margin-top:8px">The other replicas. They only copy from the leader. They serve no client traffic by default.</p></div>
+<div class="card c-amber"><span class="tag">ISR</span><p style="margin-top:8px"><b>In-Sync Replicas</b>: the leader plus followers that are fully caught up. Only ISR members can become leader.</p></div>
+</div>
+
+<h2 class="reveal">2. A failure, step by step</h2>
+<p class="reveal">One partition, three brokers. Step through a broker crash and recovery.</p>
+<div class="sim reveal">
+  <div class="sim-h">Walkthrough: broker 1 dies and comes back</div>
+  <div class="sim-b">
+    <div class="board" id="gboard"></div>
+    <div class="status" id="gstat"></div>
+    <div id="gctl"></div>
+  </div>
+</div>
+
+<h2 class="reveal">3. Break it yourself: the cluster simulator</h2>
+<p class="reveal">This is a working model of your lab cluster: 3 brokers, a topic with 3 partitions, leaders spread out as in your real cluster. Change the settings, send messages, kill and start brokers, and watch the event log explain what Kafka decides.</p>
+<div class="sim reveal">
+  <div class="sim-h">Simulator: 3-broker Kafka cluster</div>
+  <div class="sim-b">
+    <div class="sim-ctl">
+      <span>Replication factor</span><span class="seg" id="srf"><button data-v="1">1</button><button data-v="2">2</button><button data-v="3" class="on">3</button></span>
+      <span>min.insync.replicas</span><span class="seg" id="smin"><button data-v="1">1</button><button data-v="2" class="on">2</button><button data-v="3">3</button></span>
+      <span>acks</span><span class="seg" id="sacks"><button data-v="1">1</button><button data-v="all" class="on">all</button></span>
+    </div>
+    <div class="sim-ctl">
+      <button class="btn primary" data-send="0">Send to P0</button><button class="btn primary" data-send="1">Send to P1</button><button class="btn primary" data-send="2">Send to P2</button>
+      <button class="btn" id="demo">Demo: send to P0, then crash its leader instantly</button><button class="btn" id="rst">Reset</button>
+    </div>
+    <div class="board" id="board"></div>
+    <div class="status" id="pstatus">Producer idle.</div>
+    <div class="desc" id="desc"></div>
+    <div class="simlog" id="log"></div>
+  </div>
+</div>
+<div class="callout tip reveal"><strong class="ttl">Experiments (do them in order)</strong>
+<ol>
+<li><b>Survive one failure.</b> Defaults (RF 3, min 2, acks all). Send a few messages. Kill broker 0. Send more: still works. Look at <code>Isr</code> shrink and the leader move. Start broker 0 and watch it <i>catch up</i> and rejoin.</li>
+<li><b>Survive two failures, but refuse writes.</b> Kill two brokers. Writes now fail with <code>NOT_ENOUGH_REPLICAS</code> because only 1 in-sync replica is left and min is 2. Nothing is lost; Kafka protects you from a write that would sit on a single disk.</li>
+<li><b>Choose availability over safety.</b> Set <code>min.insync.replicas</code> to 1, kill two brokers, and send: it works, but now every message lives on one broker only.</li>
+<li><b>Lose data on purpose.</b> Set <code>acks=1</code> and press the <b>Demo</b> button. The message is acknowledged, the leader dies before copying it, and the log reports it lost. Repeat with <code>acks=all</code>.</li>
+<li><b>No redundancy.</b> Set RF=1 and kill a broker: partitions on it go offline. That is what "no replication" means.</li></ol></div>
+
+<h2 class="reveal">4. Read the real thing</h2>
+<p class="reveal">The simulator's grey panel copies the layout of the real <code>kafka-topics.sh --describe</code> output. Here is what your actual cluster printed when we killed <code>kafka-2</code> during testing:</p>
+<div class="callout real reveal"><strong class="ttl">Real output from your cluster</strong>
+<pre data-nocopy><code>Partition: 0  Leader: 1  Replicas: 1,2,0  Isr: 1,0      <span class="c"># broker 2 dropped out of the ISR</span>
+Partition: 1  Leader: 0  Replicas: 2,0,1  Isr: 0,1      <span class="c"># leader moved 2 -&gt; 0 automatically</span>
+Partition: 2  Leader: 0  Replicas: 0,1,2  Isr: 0,1
+<span class="c">... a few seconds after the pod restarted ...</span>
+Partition: 0  Leader: 1  Replicas: 1,2,0  Isr: 1,0,2    <span class="c"># broker 2 caught up and rejoined</span></code></pre>
+<ul style="margin-bottom:0"><li><b>Replicas</b> = where copies live (the first is the "preferred" leader).</li><li><b>Isr</b> = the copies that are in sync right now. <b>Healthy means Isr equals Replicas.</b></li><li>Producing with <code>acks=all</code> kept working during the outage, because 2 in-sync replicas is still at least <code>min.insync.replicas=2</code>.</li></ul></div>
+<p class="reveal">And when we took <b>two</b> of three brokers away, the producer reported <code>NOT_ENOUGH_REPLICAS</code>, the write was refused, and after both returned all earlier data was intact. That is the safety net doing its job.</p>
+
+<h2 class="reveal">5. How many failures can you survive?</h2>
+<div class="card reveal">
+  <div class="calc">
+    <label>Replication factor <select id="crf"><option>1</option><option>2</option><option selected>3</option><option>4</option><option>5</option></select></label>
+    <label>min.insync.replicas <select id="cmin"><option>1</option><option selected>2</option><option>3</option><option>4</option></select></label>
+  </div>
+  <div id="cres" style="margin-top:12px"></div>
+</div>
+<div class="tablewrap reveal" style="margin-top:16px"><table>
+<tr><th>RF</th><th>min ISR</th><th>Writes (acks=all) survive</th><th>Data safe after</th><th>Verdict</th></tr>
+<tr><td>1</td><td>1</td><td>0 failures</td><td>0 failures</td><td><span class="tag c-red">Never for real data</span></td></tr>
+<tr><td>2</td><td>1</td><td>1 failure</td><td>risky: acks can succeed with one copy</td><td><span class="tag c-amber">Weak</span></td></tr>
+<tr><td>2</td><td>2</td><td>0 failures</td><td>1 failure</td><td><span class="tag c-amber">Safe but fragile</span></td></tr>
+<tr><td><b>3</b></td><td><b>2</b></td><td><b>1 failure</b></td><td><b>2 failures</b></td><td><span class="tag c-green">Standard choice (your lab)</span></td></tr>
+<tr><td>3</td><td>1</td><td>2 failures</td><td>1 failure, with a loss window</td><td><span class="tag c-amber">Availability first</span></td></tr>
+</table></div>
+
+<h2 class="reveal">6. How a write is committed</h2>
+<p class="reveal">Followers copy from the leader a little behind it. Kafka calls a record <b>committed</b> only when <b>every replica in the ISR</b> has it. The highest committed position is the <b>high watermark</b>. Consumers can only read up to the high watermark, so they never see data that could vanish if the leader died.</p>
+<figure class="fig reveal">
+  <div class="hw">
+    <span>Leader</span><div style="display:flex;gap:3px"><div class="cells c-teal"><div class="cell">0</div><div class="cell">1</div><div class="cell">2</div><div class="cell">3</div></div><div class="cells c-amber"><div class="cell">4</div><div class="cell">5</div></div></div>
+    <span>Follower A</span><div style="display:flex;gap:3px"><div class="cells c-teal"><div class="cell">0</div><div class="cell">1</div><div class="cell">2</div><div class="cell">3</div></div><div class="cells c-amber"><div class="cell">4</div></div></div>
+    <span>Follower B</span><div style="display:flex;gap:3px"><div class="cells c-teal"><div class="cell">0</div><div class="cell">1</div><div class="cell">2</div><div class="cell">3</div></div></div>
+  </div>
+  <figcaption><span class="tag c-teal">teal</span> offsets 0-3 are on every ISR member: committed, visible to consumers. <span class="tag c-amber">amber</span> offsets 4-5 are not on every replica yet, so they are hidden. The high watermark is 4.</figcaption>
+</figure>
+
+<h2 class="reveal">7. Leader election, and the dangerous option</h2>
+<p class="reveal">When a leader dies, the controller picks a new one <b>from the ISR</b>, which guarantees the new leader has every committed record. If the ISR has nobody alive, the partition goes <b>offline</b> and clients get <code>LEADER_NOT_AVAILABLE</code>.</p>
+<div class="callout warn reveal"><strong class="ttl">Unclean leader election</strong>The setting <code>unclean.leader.election.enable</code> (default <b>false</b>) would let an out-of-sync replica take over to restore availability. It brings the partition back sooner but <b>permanently loses</b> the records that replica was missing. Leave it off for important data.</div>
+
+<h2 class="reveal">8. How this maps to your Kubernetes cluster</h2>
+<ul class="reveal">
+<li><b>Anti-affinity:</b> the StatefulSet forces each broker pod onto a different worker node, so a node failure costs at most one replica.</li>
+<li><b>PodDisruptionBudget (minAvailable 2):</b> a <code>kubectl drain</code> cannot take a second broker while the first is still recovering.</li>
+<li><b>Persistent volumes:</b> a restarted broker keeps its data and only has to catch up on what it missed.</li>
+<li><b>Controller quorum:</b> your three brokers are also the three KRaft controllers, so you need 2 of 3 nodes alive for cluster metadata operations (module 6).</li>
+<li>For real clusters you would also set <code>broker.rack</code> to spread replicas across availability zones.</li>
+</ul>
+
+<h2 class="reveal">Check yourself</h2>
+<div id="q4"></div>
+
+</main>
+<script src="../assets/js/app.js"></script>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var COL = { leader: 'c-purple', follower: 'c-teal', 'catching up': 'c-amber', down: 'c-gray' };
+
+  /* ---------- guided failure walkthrough ---------- */
+  var G = [
+    { t: 'Healthy', d: '<p>Partition P0 has 3 copies. Broker 1 is the leader; brokers 2 and 0 follow. ISR = 1,2,0.</p>', b: [['follower', 4], ['leader', 4], ['follower', 4]], s: 'Leader 1 &middot; ISR [1,2,0]', c: 'ok' },
+    { t: 'Broker 1 crashes', d: '<p>The server hosting the leader dies. Producers and consumers get errors for a moment because the leader has vanished.</p>', b: [['follower', 4], ['down', 4], ['follower', 4]], s: 'Leader: none (election pending)', c: 'bad' },
+    { t: 'The controller elects a new leader', d: '<p>Within seconds the controller notices, removes broker 1 from the ISR and promotes an <b>in-sync</b> follower. Broker 2 becomes leader. Nothing committed is lost, because it had every committed record.</p>', b: [['follower', 4], ['down', 4], ['leader', 4]], s: 'Leader 2 &middot; ISR [2,0]', c: 'warn' },
+    { t: 'Clients carry on', d: '<p>Clients refresh their metadata, learn the new leader and continue. A new record (offset 4) is written to the leader and copied to the other in-sync follower.</p>', b: [['follower', 5], ['down', 4], ['leader', 5]], s: 'Leader 2 &middot; ISR [2,0] &middot; under-replicated (2 of 3 copies)', c: 'warn' },
+    { t: 'Broker 1 comes back', d: '<p>The pod restarts with its disk intact. It is behind (missing offset 4), so it is <b>not</b> in the ISR yet. It fetches the missing data from the leader.</p>', b: [['follower', 5], ['catching up', 4], ['leader', 5]], s: 'Leader 2 &middot; ISR [2,0] &middot; broker 1 catching up', c: 'warn' },
+    { t: 'Fully recovered', d: '<p>Broker 1 is caught up and rejoins the ISR as a follower. The leader stays on broker 2 (leadership does not bounce back immediately, to avoid more disruption). The cluster is healthy again.</p>', b: [['follower', 5], ['follower', 5], ['leader', 5]], s: 'Leader 2 &middot; ISR [2,0,1] &middot; healthy', c: 'ok' }
+  ];
+  KT.stepper(document.querySelector('#gctl'), G, function (i) {
+    var g = G[i], h = '';
+    g.b.forEach(function (x, id) {
+      var role = x[0], n = x[1], cells = '';
+      for (var k = 0; k < n; k++) cells += '<div class="cell' + (k === 4 && i >= 3 && role !== 'catching up' && role !== 'down' ? ' new' : '') + '">' + k + '</div>';
+      h += '<div class="bk' + (role === 'down' ? ' down' : '') + '"><h5><span>Broker ' + id + (role === 'down' ? ' (DOWN)' : '') + '</span></h5><div class="rep ' + COL[role] + (role === 'leader' ? ' leader' : '') + '"><span class="role">' + role + '</span>P0<div class="cells">' + cells + '</div></div></div>';
+    });
+    $('gboard').innerHTML = h; $('gstat').className = 'status ' + g.c; $('gstat').innerHTML = '<b>' + g.s + '</b>';
+  }, { ms: 3600 });
+
+  /* ---------- full cluster simulator ---------- */
+  var REP = [[1, 2, 0], [2, 0, 1], [0, 1, 2]], S = null, T = {};
+  function log(m, c) { KT.log($('log'), m, c); }
+  function reps(p) { return REP[p].slice(0, S.rf); }
+  function isRep(b, p) { return reps(p).indexOf(b) >= 0; }
+  function clr(k) { if (T[k]) clearTimeout(T[k]); delete T[k]; }
+  function status(t, c) { $('pstatus').className = 'status ' + (c || ''); $('pstatus').textContent = t; }
+  function fresh(rf, keep) {
+    Object.keys(T).forEach(function (k) { clearTimeout(T[k]); }); T = {};
+    S = { rf: rf, min: keep ? S.min : 2, acks: keep ? S.acks : 'all', down: [false, false, false], logs: [[[], [], []], [[], [], []], [[], [], []]], isr: [], leader: [], id: 0, pend: [] };
+    for (var p = 0; p < 3; p++) { S.isr.push(reps(p).slice()); S.leader.push(REP[p][0]); }
+    $('log').innerHTML = ''; status('Producer idle.', ''); render();
+  }
+  function elect(p) {
+    var cand = S.isr[p].filter(function (b) { return !S.down[b]; });
+    if (cand.length) { S.leader[p] = cand[0]; log('Controller: P' + p + ' new leader is broker ' + cand[0] + ' (chosen from the ISR)', 'ok'); }
+    else { S.leader[p] = null; log('P' + p + ' has no live in-sync replica: OFFLINE', 'bad'); }
+  }
+  function retry(p, id) {
+    setTimeout(function () {
+      var L = S.leader[p];
+      if (L === null) { log('Retry of msg ' + id + ' failed: P' + p + ' has no leader', 'bad'); status('Producer error: LEADER_NOT_AVAILABLE', 'bad'); return; }
+      if (S.logs[L][p].indexOf(id) >= 0) { log('Retry: msg ' + id + ' is already on the new leader; the idempotent producer discards the duplicate', 'ok'); status('Producer: ACK received after retry', 'ok'); }
+      else send(p, id);
+    }, 900);
+  }
+  function kill(b) {
+    if (S.down[b]) return; S.down[b] = true; log('Broker ' + b + ' crashed', 'bad');
+    for (var p = 0; p < 3; p++) {
+      if (!isRep(b, p)) continue;
+      clr('c' + p + '_' + b);
+      S.pend = S.pend.filter(function (x) {
+        if (x.p === p && x.L === b) {
+          clr(x.key);
+          if (x.kind === 'one') { log('Msg ' + x.id + ' was ACKED to the producer but only existed on broker ' + b + ': LOST', 'bad'); status('Producer was told SUCCESS, but the message is LOST', 'bad'); }
+          else { log('Msg ' + x.id + ' never got its ack (leader died). Producer times out and retries', 'warn'); retry(p, x.id); }
+          return false;
+        } return true;
+      });
+      if (S.isr[p].indexOf(b) >= 0) {
+        var rest = S.isr[p].filter(function (x) { return x !== b; });
+        if (rest.length) { S.isr[p] = rest; if (S.leader[p] === b) elect(p); else log('P' + p + ': broker ' + b + ' removed from ISR', 'warn'); }
+        else { S.leader[p] = null; log('P' + p + ': its last in-sync replica (broker ' + b + ') died: OFFLINE until it returns', 'bad'); }
+      }
+    }
+    ensureCatch(); render();
+  }
+  function start(b) {
+    if (!S.down[b]) return; S.down[b] = false; log('Broker ' + b + ' restarted (disk intact)', 'ok');
+    for (var p = 0; p < 3; p++) {
+      if (!isRep(b, p) || S.leader[p] !== null) continue;
+      if (S.isr[p].indexOf(b) >= 0) { S.leader[p] = b; S.isr[p] = [b]; log('P' + p + ': broker ' + b + ' was the last in-sync replica and becomes leader again', 'ok'); }
+      else log('P' + p + ': broker ' + b + ' is back but was not in sync, so it cannot lead. Waiting for the last in-sync replica', 'warn');
+    }
+    ensureCatch(); render();
+  }
+  function ensureCatch() {
+    for (var p = 0; p < 3; p++) {
+      var L = S.leader[p]; if (L === null) continue;
+      reps(p).forEach(function (r) { if (r !== L && !S.down[r] && S.isr[p].indexOf(r) < 0 && !T['c' + p + '_' + r]) startCatch(p, r); });
+    }
+  }
+  function startCatch(p, r) {
+    var L = S.leader[p], key = 'c' + p + '_' + r, lr = S.logs[r][p], ll = S.logs[L][p], i = 0;
+    while (i < lr.length && lr[i] === ll[i]) i++;
+    if (lr.length > i) { log('Broker ' + r + ' truncates ' + (lr.length - i) + ' record(s) on P' + p + ' that the new leader never had', 'warn'); lr.length = i; }
+    log('Broker ' + r + ' is catching up on P' + p + ' from leader ' + L, 'info'); T[key] = -1;
+    (function tick() {
+      var Lc = S.leader[p];
+      if (S.down[r] || Lc === null || Lc !== L) { delete T[key]; ensureCatch(); return; }
+      var cur = S.logs[r][p], src = S.logs[L][p];
+      if (cur.length < src.length) { cur.push(src[cur.length]); render(); T[key] = setTimeout(tick, 500); }
+      else { delete T[key]; if (S.isr[p].indexOf(r) < 0) { S.isr[p].push(r); log('Broker ' + r + ' rejoined the ISR of P' + p, 'ok'); } render(); }
+    })();
+  }
+  function send(p, rid) {
+    var L = S.leader[p], id = rid || ++S.id;
+    if (L === null) { log('Send to P' + p + ' FAILED: LEADER_NOT_AVAILABLE (partition offline)', 'bad'); status('Producer error: LEADER_NOT_AVAILABLE', 'bad'); return; }
+    if (S.acks === 'all' && S.isr[p].length < S.min) { log('Send to P' + p + ' REJECTED: NOT_ENOUGH_REPLICAS (ISR has ' + S.isr[p].length + ', min.insync.replicas is ' + S.min + '). Nothing was written.', 'bad'); status('Producer error: NOT_ENOUGH_REPLICAS (write refused, no data lost)', 'bad'); return; }
+    S.logs[L][p].push(id);
+    var off = S.logs[L][p].length - 1, fol = S.isr[p].filter(function (b) { return b !== L; }), key = 'w' + p + '_' + id;
+    if (S.acks === '1') {
+      log('Msg ' + id + ' written to P' + p + ' on leader ' + L + ' (offset ' + off + '). ACK sent immediately (acks=1)', 'ok'); status('Producer: ACK received from leader only', 'warn');
+      S.pend.push({ p: p, L: L, id: id, kind: 'one', key: key });
+      T[key] = setTimeout(function () {
+        delete T[key]; S.pend = S.pend.filter(function (x) { return x.key !== key; });
+        if (S.leader[p] === L && !S.down[L]) { fol.forEach(function (f) { if (!S.down[f] && S.isr[p].indexOf(f) >= 0) S.logs[f][p].push(id); }); log('Msg ' + id + ' replicated to followers', 'info'); render(); }
+      }, 1600);
+    } else {
+      log('Msg ' + id + ' written to P' + p + ' on leader ' + L + ' (offset ' + off + '). Waiting for ' + fol.length + ' follower(s) (acks=all)', 'info'); status('Producer: waiting for ack...', '');
+      S.pend.push({ p: p, L: L, id: id, kind: 'all', key: key });
+      T[key] = setTimeout(function () {
+        delete T[key]; S.pend = S.pend.filter(function (x) { return x.key !== key; });
+        if (S.leader[p] === L && !S.down[L]) {
+          var live = fol.filter(function (f) { return !S.down[f]; }); live.forEach(function (f) { S.logs[f][p].push(id); });
+          log('Msg ' + id + ' ACKED: stored on ' + (live.length + 1) + ' in-sync replica(s)', 'ok'); status('Producer: ACK received (all in-sync replicas)', 'ok'); render();
+        }
+      }, 1100);
+    }
+    render();
+  }
+  function render() {
+    var h = '', b, p;
+    for (b = 0; b < 3; b++) {
+      h += '<div class="bk' + (S.down[b] ? ' down' : '') + '"><h5><span>Broker ' + b + (S.down[b] ? ' (DOWN)' : '') + '</span><button class="btn sm ' + (S.down[b] ? '' : 'danger') + '" data-b="' + b + '">' + (S.down[b] ? 'Start' : 'Kill') + '</button></h5>';
+      var any = false;
+      for (p = 0; p < 3; p++) {
+        if (!isRep(b, p)) continue; any = true;
+        var role = S.down[b] ? 'down' : (S.leader[p] === b ? 'leader' : (S.isr[p].indexOf(b) >= 0 ? 'follower' : 'catching up'));
+        var lg = S.logs[b][p], cells = lg.slice(-11).map(function (id) { return '<div class="cell">' + id + '</div>'; }).join('');
+        h += '<div class="rep ' + COL[role] + (role === 'leader' ? ' leader' : '') + '"><span class="role">' + role + '</span>P' + p + '<div class="cells">' + (lg.length > 11 ? '<span class="small muted">&hellip;</span>' : '') + cells + '</div></div>';
+      }
+      if (!any) h += '<div class="small muted">holds no partitions at this replication factor</div>';
+      h += '</div>';
+    }
+    $('board').innerHTML = h;
+    var d = '<span style="color:#8b8aa3">$ kafka-topics.sh --describe --topic orders</span>\n';
+    for (p = 0; p < 3; p++) {
+      var ld = S.leader[p], note = '', cls = 'ok';
+      if (ld === null) { note = '   &lt;-- OFFLINE'; cls = 'bad'; }
+      else if (S.acks === 'all' && S.isr[p].length < S.min) { note = '   &lt;-- below min ISR: writes refused'; cls = 'warn'; }
+      else if (S.isr[p].length < S.rf) { note = '   &lt;-- under-replicated'; cls = 'warn'; }
+      d += '<span class="' + cls + '">Partition: ' + p + '  Leader: ' + (ld === null ? 'none' : ld) + '  Replicas: ' + reps(p).join(',') + '  Isr: ' + S.isr[p].join(',') + note + '</span>\n';
+    }
+    $('desc').innerHTML = d;
+    if (S.min > S.rf && S.acks === 'all') $('desc').innerHTML += '<span class="bad">min.insync.replicas (' + S.min + ') is larger than the replication factor (' + S.rf + '): every acks=all write will be refused!</span>';
+  }
+  function seg(id, key, cb) { $(id).onclick = function (e) { var v = e.target.getAttribute('data-v'); if (!v) return; this.querySelectorAll('button').forEach(function (x) { x.classList.toggle('on', x === e.target); }); cb(v); }; }
+  seg('srf', 'rf', function (v) { fresh(+v, true); });
+  seg('smin', 'min', function (v) { S.min = +v; log('min.insync.replicas set to ' + v, 'info'); render(); });
+  seg('sacks', 'acks', function (v) { S.acks = v; log('Producer acks set to ' + v, 'info'); render(); });
+  $('board').onclick = function (e) { var b = e.target.getAttribute('data-b'); if (b === null) return; b = +b; if (S.down[b]) start(b); else kill(b); };
+  document.querySelectorAll('[data-send]').forEach(function (x) { x.onclick = function () { send(+x.getAttribute('data-send')); }; });
+  $('demo').onclick = function () { var L = S.leader[0]; if (L === null) { log('P0 has no leader right now', 'bad'); return; } log('DEMO: sending to P0 then crashing its leader (broker ' + L + ') immediately', 'warn'); send(0); setTimeout(function () { kill(L); }, 250); };
+  $('rst').onclick = function () { fresh(S.rf, true); };
+  fresh(3, false);
+
+  /* ---------- survivability calculator ---------- */
+  function calc() {
+    var rf = +$('crf').value, mn = +$('cmin').value, r = $('cres');
+    if (mn > rf) { r.innerHTML = '<div class="status bad"><b>Invalid:</b> min.insync.replicas (' + mn + ') cannot exceed the replication factor (' + rf + '). With acks=all every write would be refused.</div>'; return; }
+    var w = rf - mn, lines = [];
+    lines.push('<div class="status ' + (w > 0 ? 'ok' : 'warn') + '"><b>Writes with acks=all keep working</b> while up to <b>' + w + '</b> broker' + (w === 1 ? '' : 's') + ' of this partition are down.</div>');
+    lines.push('<div class="status ' + (mn >= 2 ? 'ok' : 'bad') + '"><b>Acknowledged data is safe</b> as long as at least one of the ' + mn + ' acknowledging replicas survives. ' + (mn >= 2 ? 'Every acknowledged write is on at least ' + mn + ' brokers.' : 'With min=1 an acknowledged write may sit on a single broker: a crash can lose it.') + '</div>');
+    lines.push('<div class="status"><b>Reads still work</b> until all ' + rf + ' replicas are down (as long as one in-sync replica remains).</div>');
+    r.innerHTML = lines.join('');
+  }
+  $('crf').onchange = calc; $('cmin').onchange = calc; calc();
+
+  KT.quiz($('q4'), 'm4', 'Quick check', [
+    { q: 'What does ISR mean?', o: ['Internal Server Replica', 'In-Sync Replicas: the leader plus followers that are caught up', 'Isolated Storage Region', 'Idle Standby Replicas'], a: 1, why: 'Only replicas in the ISR are eligible to become leader, which keeps committed data safe.' },
+    { q: 'RF=3, min.insync.replicas=2, acks=all. Two brokers fail. What do producers see?', o: ['Everything works', 'NOT_ENOUGH_REPLICAS: writes are refused, no data lost', 'Data silently lost', 'Kafka deletes the topic'], a: 1, why: 'Only 1 in-sync replica remains, which is below min.insync.replicas=2. Kafka refuses the write instead of risking it.' },
+    { q: 'Which settings give the strongest durability for important data?', o: ['RF=1, acks=0', 'RF=3, min.insync.replicas=2, acks=all', 'RF=2, min.insync.replicas=1, acks=1', 'RF=3, acks=0'], a: 1, why: 'Three copies, at least two needed for every write, and the producer waits for them.' },
+    { q: 'Why does Kafka elect a new leader only from the ISR?', o: ['It is faster', 'The ISR members are guaranteed to have all committed records', 'Out-of-sync replicas are deleted', 'It saves disk'], a: 1, why: 'An out-of-sync replica is missing data; promoting it would lose committed records.' },
+    { q: 'Your three brokers run on three different Kubernetes nodes. What does that protect against?', o: ['Nothing extra', 'Losing a whole node taking out more than one replica', 'Slow consumers', 'Topic misconfiguration'], a: 1, why: 'Pod anti-affinity places one replica per node, so a single node failure removes at most one copy.' }
+  ]);
+})();
+</script>
+</body>
+</html>

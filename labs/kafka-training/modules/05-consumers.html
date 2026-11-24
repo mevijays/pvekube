@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>5. Consuming data (consumers) | Kafka Training</title>
+<script src="../assets/js/theme.js"></script>
+<link rel="stylesheet" href="../assets/css/style.css">
+<style>
+  .crow { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin: 0 0 14px; }
+  .cons { border: 1.5px solid var(--s, var(--border)); background: var(--f, var(--surface)); color: var(--t, var(--text)); border-radius: 12px; padding: 10px; font-size: .85rem; transition: all .4s; min-height: 92px; }
+  .cons h5 { margin: 0 0 6px; font-size: .88rem; } .cons.idle { opacity: .55; border-style: dashed; } .cons.dead { background: var(--red-f); border-color: var(--red-s); color: var(--red-t); }
+  .pchip { display: inline-block; font: 600 .74rem var(--mono); padding: 2px 8px; border-radius: 6px; margin: 2px 3px 2px 0; background: var(--surface); border: 1px solid var(--s, var(--border)); color: var(--text); }
+  .lagtbl td, .lagtbl th { padding: 6px 10px; font-size: .84rem; } .bar { height: 12px; background: var(--surface2); border-radius: 6px; overflow: hidden; min-width: 120px; border: 1px solid var(--border); }
+  .bar i { display: block; height: 100%; background: var(--teal-s); transition: width .5s, background .5s; } .bar i.hi { background: var(--amber-s); } .bar i.vhi { background: var(--red-s); }
+  .banner { font-weight: 600; font-size: .86rem; padding: 6px 12px; border-radius: 8px; margin-bottom: 10px; background: var(--surface2); border: 1px solid var(--border); }
+  .banner.rb { background: var(--amber-f); border-color: var(--amber-s); color: var(--amber-t); }
+  .eff { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; } .eff div { padding: 8px 12px; border-radius: 10px; border: 1.5px solid; font-size: .85rem; text-align: center; min-width: 84px; }
+  .eff .e0 { background: var(--red-f); border-color: var(--red-s); color: var(--red-t); } .eff .e1 { background: var(--teal-f); border-color: var(--teal-s); color: var(--teal-t); } .eff .e2 { background: var(--amber-f); border-color: var(--amber-s); color: var(--amber-t); }
+</style>
+</head>
+<body data-root=".." data-module="5">
+<aside class="side" id="side"></aside>
+<main class="main" id="main">
+
+<div class="kicker">Module 5 of 10 &middot; The data journey</div>
+<h1>Consuming data (consumers)</h1>
+<p class="lead">A consumer reads records from topics. Kafka's special trick is the consumer group: many instances of one application share the work automatically, while other applications read the very same data independently.</p>
+<div class="meta"><span class="pill">30 minutes</span><span class="pill">2 simulators</span><span class="pill">real lag output from your cluster</span></div>
+<div class="goals"><h4>By the end you can</h4><ul>
+<li>Explain consumer groups, partition assignment and why extra consumers sit idle</li>
+<li>Explain offsets, commits, replay and consumer lag</li>
+<li>Pick a delivery guarantee: at-most-once, at-least-once or exactly-once</li>
+<li>Understand rebalancing and what makes it hurt</li></ul></div>
+
+<h2 class="reveal">1. Consumers pull</h2>
+<p class="reveal">Kafka does not push messages to consumers. Consumers <b>poll</b>: "give me what you have after offset N". That makes each consumer control its own pace, so a slow consumer never slows a fast one, and a consumer that was down for an hour simply catches up when it returns.</p>
+<div class="callout analogy reveal"><strong class="ttl">Analogy</strong>A library with a numbered shelf of books (the log). Each reader keeps a bookmark (offset) of where they stopped. Readers read whenever they like, and the library never removes a book because someone read it.</div>
+
+<h2 class="reveal">2. Consumer groups: sharing the work</h2>
+<p class="reveal">Every consumer sets a <code>group.id</code>. Consumers with the same group id form a <b>consumer group</b>, and Kafka gives each partition to <b>exactly one</b> consumer in the group. Two rules follow:</p>
+<ul class="reveal"><li><b>More consumers means more speed</b>, up to the number of partitions.</li><li><b>Extra consumers beyond the partition count sit idle</b> (useful as hot standbys, useless for speed).</li></ul>
+<p class="reveal">Different groups are completely independent: Payments, Email and Analytics can each have their own group and each gets <i>every</i> record.</p>
+
+<div class="sim reveal">
+  <div class="sim-h">Simulator: consumer group, partitions, lag and rebalancing</div>
+  <div class="sim-b">
+    <div class="sim-ctl">
+      <label>Partitions <input type="range" id="cP" min="1" max="8" value="4"> <span class="val" id="cPv">4</span></label>
+      <label>Records produced / tick <input type="range" id="cR" min="0" max="40" value="12"> <span class="val" id="cRv">12</span></label>
+      <label>Speed of each consumer / tick <input type="range" id="cC" min="1" max="20" value="6"> <span class="val" id="cCv">6</span></label>
+    </div>
+    <div class="sim-ctl">
+      <button class="btn primary" id="add">+ Add consumer</button><button class="btn" id="rem">- Remove a consumer</button>
+      <button class="btn danger" id="crash">Crash a consumer</button><button class="btn" id="pause">Pause</button><button class="btn" id="creset">Reset</button>
+    </div>
+    <div class="banner" id="banner">Running</div>
+    <div class="crow" id="crow"></div>
+    <div class="tablewrap" style="margin:0"><table class="lagtbl" id="lagtbl"></table></div>
+    <div class="status" id="cstat"></div>
+    <div class="simlog" id="clog" style="height:120px"></div>
+  </div>
+</div>
+<div class="callout tip reveal"><strong class="ttl">Experiments</strong><ol>
+<li>Start: 4 partitions, 1 consumer that is too slow (12 in, 6 out per tick). <b>Lag grows.</b> Press <b>+ Add consumer</b> until lag falls.</li>
+<li>Keep adding consumers past 4. The extras show <b>idle</b>: nothing more to share.</li>
+<li>Press <b>Crash a consumer</b>. Its partitions <b>stall</b> for a few ticks (Kafka waits for the session timeout before deciding it is dead), then a <b>rebalance</b> hands them to the survivors and the backlog is drained.</li>
+<li>Watch the banner turn amber during rebalances: in the classic "eager" protocol, <b>every</b> consumer pauses while partitions are re-dealt.</li></ol></div>
+
+<h2 class="reveal">3. Offsets, commits and lag</h2>
+<p class="reveal">A consumer's progress is stored by Kafka itself, in an internal topic named <code>__consumer_offsets</code>, as one number per (group, topic, partition): "next offset to read". Saving that number is called <b>committing</b>.</p>
+<ul class="reveal"><li><b>Committed offset</b> (CURRENT-OFFSET): where the group will resume after a restart.</li><li><b>Log end offset</b>: the newest record in the partition.</li><li><b>Lag</b> = log end offset &minus; committed offset: how far behind the group is. It is the single most useful consumer health number.</li></ul>
+
+<div class="callout real reveal"><strong class="ttl">Real output from your cluster</strong>
+We produced 30 keyed records, let a group named <code>billing</code> read only 12, then described the group:
+<pre data-nocopy><code><span class="p">$</span> kafka-consumer-groups.sh --bootstrap-server $BS --describe --group billing
+
+GROUP    TOPIC            PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG
+billing  training-orders  1          10              10              0
+billing  training-orders  0          2               5               3
+billing  training-orders  2          0               15              15</code></pre>
+Partition 2 had not been read at all (lag 15) and partition 0 was partly read (lag 3). After the group read the rest, every LAG became 0. Notice also that the 12 messages came out as partition 1 first, then partition 0: <b>no ordering across partitions</b>.</div>
+
+<h3 class="reveal">Where does a brand-new group start?</h3>
+<p class="reveal">If a group has no committed offset (first run, or the data was deleted), <code>auto.offset.reset</code> decides: <code>latest</code> (default: only new records) or <code>earliest</code> (read everything retained). It is <b>only used when there is no committed offset</b>, a classic source of confusion.</p>
+
+<h3 class="reveal">Replay</h3>
+<p class="reveal">Because records stay, you can move a group's bookmark. With the group stopped: <code>kafka-consumer-groups.sh ... --reset-offsets --to-earliest --execute</code> re-reads everything; <code>--to-datetime</code> or <code>--shift-by</code> go to a time or move relative to now. Bad deploy processed 2 hours of data wrongly? Fix the code, rewind, reprocess.</p>
+
+<h2 class="reveal">4. Delivery guarantees: lose it, repeat it, or get it once</h2>
+<p class="reveal">The order of two steps, <b>process the record</b> and <b>commit the offset</b>, decides what happens if the consumer crashes in between. Run the same crash (at message 3) under each approach.</p>
+<div class="sim reveal">
+  <div class="sim-h">Simulator: crash while handling message 3 of 5</div>
+  <div class="sim-b">
+    <div class="sim-ctl">
+      <select id="dm">
+        <option value="before">Commit first, then process (at-most-once)</option>
+        <option value="after" selected>Process first, then commit (at-least-once)</option>
+        <option value="idem">At-least-once + idempotent processing</option>
+        <option value="txn">Kafka transactions (exactly-once)</option>
+      </select>
+      <button class="btn primary" id="dgo">Run with crash at message 3</button>
+    </div>
+    <div class="simlog" id="dlog" style="height:140px"></div>
+    <div class="eff" id="eff"></div>
+    <div class="status" id="dverd">Pick an approach and run it. The boxes show how many times each message's effect was applied (for example, how many times an email was sent).</div>
+  </div>
+</div>
+<div class="tablewrap reveal"><table>
+<tr><th>Guarantee</th><th>How</th><th>On crash</th><th>Use when</th></tr>
+<tr><td>At-most-once</td><td>commit, then process</td><td>message may be lost</td><td>Losing some data is fine (metrics sampling)</td></tr>
+<tr><td><b>At-least-once</b></td><td>process, then commit</td><td>message may repeat</td><td><b>Default choice</b>. Make processing idempotent.</td></tr>
+<tr><td>Exactly-once</td><td>Kafka transactions: read, process and write output and the offset commit atomically (<code>isolation.level=read_committed</code>)</td><td>no loss, no duplicates (within Kafka)</td><td>Kafka-to-Kafka pipelines, financial aggregations</td></tr>
+</table></div>
+<div class="callout note reveal"><strong class="ttl">Practical advice</strong>Most teams choose <b>at-least-once plus idempotent handlers</b>: for example, an upsert keyed by order id, or "insert if not exists". It is simple, fast and survives every crash. Exactly-once transactions only cover work that stays inside Kafka; a call to an external email service is still at-least-once unless you make it idempotent.</div>
+
+<h2 class="reveal">5. Rebalancing, and why it hurts</h2>
+<p class="reveal">A <b>rebalance</b> re-deals partitions among group members. It is triggered when a consumer joins, leaves, crashes (no heartbeat), is too slow, or when the topic gains partitions. During a classic rebalance everyone stops reading, so processing pauses.</p>
+<div class="tablewrap reveal"><table>
+<tr><th>Setting</th><th>Meaning</th><th>Typical value</th></tr>
+<tr><td><code>heartbeat.interval.ms</code></td><td>How often the consumer says "I am alive"</td><td>3000</td></tr>
+<tr><td><code>session.timeout.ms</code></td><td>No heartbeat for this long means the consumer is dead and a rebalance starts</td><td>45000</td></tr>
+<tr><td><code>max.poll.interval.ms</code></td><td>Max time between <code>poll()</code> calls. If your processing takes longer, you are kicked out of the group.</td><td>300000</td></tr>
+<tr><td><code>max.poll.records</code></td><td>Records per poll. Lower it if each record is slow to process.</td><td>500</td></tr>
+<tr><td><code>partition.assignment.strategy</code></td><td><code>CooperativeStickyAssignor</code> moves only the partitions that must move, instead of stopping everyone</td><td>cooperative-sticky</td></tr>
+<tr><td><code>group.instance.id</code></td><td>"Static membership": a restarting pod rejoins without triggering a rebalance</td><td>pod name</td></tr>
+</table></div>
+<div class="callout warn reveal"><strong class="ttl">Classic mistake</strong>A handler that takes 6 minutes per batch exceeds <code>max.poll.interval.ms</code>, the consumer is evicted, a rebalance starts, the batch is redelivered to someone else, and the cycle repeats. Fix: smaller <code>max.poll.records</code>, faster handlers, or a longer interval.</div>
+
+<h2 class="reveal">6. Consumer settings cheat sheet</h2>
+<div class="tablewrap reveal"><table>
+<tr><th>Setting</th><th>Purpose</th><th>Recommended</th></tr>
+<tr><td><code>group.id</code></td><td>Identity of the group. Name it after the application.</td><td>one per app</td></tr>
+<tr><td><code>enable.auto.commit</code></td><td>Commit offsets on a timer in the background. Convenient but can commit before processing is done.</td><td><code>false</code>, commit yourself after processing</td></tr>
+<tr><td><code>auto.offset.reset</code></td><td>Where to start with no saved offset</td><td><code>earliest</code> for pipelines</td></tr>
+<tr><td><code>isolation.level</code></td><td><code>read_committed</code> hides records from aborted transactions</td><td><code>read_committed</code> with transactions</td></tr>
+<tr><td><code>fetch.min.bytes</code> / <code>fetch.max.wait.ms</code></td><td>Trade latency for bigger fetches</td><td>defaults</td></tr>
+</table></div>
+
+<h2 class="reveal">7. Code: a consumer in three languages</h2>
+<details class="reveal" open><summary>Java</summary><div>
+<pre><code>Properties p = new Properties();
+p.put("bootstrap.servers", "kafka-0.kafka-headless.kafka.svc.cluster.local:9092");
+p.put("group.id", "billing");
+p.put("key.deserializer",   "org.apache.kafka.common.serialization.StringDeserializer");
+p.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+p.put("auto.offset.reset", "earliest");
+p.put("enable.auto.commit", "false");
+
+try (KafkaConsumer&lt;String, String&gt; c = new KafkaConsumer&lt;&gt;(p)) {
+  c.subscribe(List.of("orders"));
+  while (true) {
+    ConsumerRecords&lt;String, String&gt; recs = c.poll(Duration.ofMillis(500));
+    for (ConsumerRecord&lt;String, String&gt; r : recs) process(r);  // work first
+    c.commitSync();                                            // then commit: at-least-once
+  }
+}</code></pre></div></details>
+<details class="reveal"><summary>Python (confluent-kafka)</summary><div>
+<pre><code>from confluent_kafka import Consumer
+
+c = Consumer({
+    "bootstrap.servers": "kafka-0.kafka-headless.kafka.svc.cluster.local:9092",
+    "group.id": "billing",
+    "auto.offset.reset": "earliest",
+    "enable.auto.commit": False,
+})
+c.subscribe(["orders"])
+try:
+    while True:
+        msg = c.poll(1.0)
+        if msg is None:
+            continue
+        if msg.error():
+            print(msg.error()); continue
+        process(msg.key(), msg.value())   # work first
+        c.commit(message=msg)             # then commit
+finally:
+    c.close()</code></pre></div></details>
+<details class="reveal"><summary>Go (kafka-go)</summary><div>
+<pre><code>r := kafka.NewReader(kafka.ReaderConfig{
+    Brokers: []string{"kafka-0.kafka-headless.kafka.svc.cluster.local:9092"},
+    GroupID: "billing",
+    Topic:   "orders",
+})
+defer r.Close()
+
+for {
+    m, err := r.FetchMessage(ctx)       // does not auto-commit
+    if err != nil { break }
+    process(m)                          // work first
+    if err := r.CommitMessages(ctx, m); err != nil { log.Fatal(err) }
+}</code></pre></div></details>
+
+<h2 class="reveal">Check yourself</h2>
+<div id="q5"></div>
+
+</main>
+<script src="../assets/js/app.js"></script>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var COLORS = ['c-purple', 'c-teal', 'c-coral', 'c-blue', 'c-pink', 'c-green', 'c-amber', 'c-gray'];
+  var P = 4, C = [], nid = 1, leo = [], pos = [], assign = [], rate = 12, cap = 6, rebal = 0, paused = false, ptr = 0, prevLag = 0, trend = [], timer;
+  function log(m, c) { KT.log($('clog'), m, c); }
+  function rangeAssign() {
+    var m = C.filter(function (c) { return c.alive; }); assign = []; for (var i = 0; i < P; i++) assign.push(null);
+    if (!m.length) return;
+    var per = Math.floor(P / m.length), extra = P % m.length, p = 0;
+    m.forEach(function (c, i) { var n = per + (i < extra ? 1 : 0); for (var k = 0; k < n; k++) assign[p++] = c.id; });
+  }
+  function reset() {
+    P = +$('cP').value; C = []; nid = 1; leo = []; pos = []; ptr = 0; rebal = 0; trend = []; prevLag = 0; $('clog').innerHTML = '';
+    for (var i = 0; i < P; i++) { leo.push(0); pos.push(0); }
+    addC(true); log('Group started with 1 consumer and ' + P + ' partitions', 'info'); render();
+  }
+  function addC(quiet) { C.push({ id: nid, alive: true, detect: 0, color: COLORS[(nid - 1) % COLORS.length] }); nid++; rangeAssign(); if (!quiet) { rebal = 1; log('Consumer ' + (nid - 1) + ' joined: REBALANCE (all consumers pause briefly)', 'warn'); } }
+  function lagOf(p) { return leo[p] - pos[p]; }
+  function tick() {
+    if (paused) return;
+    for (var i = 0; i < rate; i++) { leo[ptr % P]++; ptr++; }
+    C.forEach(function (c) { if (!c.alive && c.detect > 0) { c.detect--; if (c.detect === 0) { C = C.filter(function (x) { return x !== c; }); rangeAssign(); rebal = 1; log('Session timeout: consumer ' + c.id + ' declared dead. REBALANCE reassigns its partitions', 'warn'); } } });
+    if (rebal > 0) { rebal--; } else {
+      C.forEach(function (c) {
+        if (!c.alive) return; var ps = []; for (var p = 0; p < P; p++) if (assign[p] === c.id) ps.push(p);
+        var budget = cap, progressed = true;
+        while (budget > 0 && progressed) { progressed = false; ps.forEach(function (p) { if (budget > 0 && lagOf(p) > 0) { pos[p]++; budget--; progressed = true; } }); }
+      });
+    }
+    render();
+  }
+  function render() {
+    var h = '', p, tot = 0;
+    C.forEach(function (c) {
+      var owned = []; for (p = 0; p < P; p++) if (assign[p] === c.id) owned.push(p);
+      var cls = !c.alive ? 'dead' : (owned.length ? '' : 'idle');
+      h += '<div class="cons ' + c.color + ' ' + cls + '"><h5>Consumer ' + c.id + (!c.alive ? ' (crashed)' : '') + '</h5>' +
+        (owned.length ? owned.map(function (x) { return '<span class="pchip">P' + x + '</span>'; }).join('') : '<span class="muted">idle: no partition to read</span>') +
+        (!c.alive ? '<div class="small">no heartbeat... waiting for session timeout (' + c.detect + ')</div>' : '') + '</div>';
+    });
+    $('crow').innerHTML = h;
+    var mx = Math.max(20, Math.max.apply(null, leo.map(function (x, i) { return lagOf(i); })));
+    var t = '<tr><th>PARTITION</th><th>CURRENT-OFFSET</th><th>LOG-END-OFFSET</th><th>LAG</th><th></th><th>CONSUMER</th></tr>';
+    for (p = 0; p < P; p++) { var lg = lagOf(p); tot += lg; var w = Math.min(100, lg / mx * 100), cl = lg > 60 ? 'vhi' : (lg > 20 ? 'hi' : '');
+      t += '<tr><td>' + p + '</td><td>' + pos[p] + '</td><td>' + leo[p] + '</td><td><b>' + lg + '</b></td><td><div class="bar"><i class="' + cl + '" style="width:' + w + '%"></i></div></td><td>' + (assign[p] === null ? '-' : 'consumer ' + assign[p]) + '</td></tr>'; }
+    $('lagtbl').innerHTML = t;
+    trend.push(tot); if (trend.length > 6) trend.shift();
+    var up = trend.length >= 4 && trend[trend.length - 1] > trend[0] + 2, down = trend.length >= 4 && trend[trend.length - 1] < trend[0] - 2;
+    var alive = C.filter(function (c) { return c.alive; }).length, st = $('cstat'), msg;
+    if (!alive) { st.className = 'status bad'; msg = 'No live consumers: nothing is reading. Lag grows without limit.'; }
+    else if (up) { st.className = 'status bad'; msg = 'Total lag ' + tot + ' and GROWING. Consumers cannot keep up. ' + (alive < P ? 'Add consumers (you have ' + alive + ', up to ' + P + ' can work).' : 'You already have a consumer per partition: make each faster or add partitions.'); }
+    else if (down) { st.className = 'status ok'; msg = 'Total lag ' + tot + ' and shrinking. The group is catching up.'; }
+    else { st.className = 'status ' + (tot < 10 ? 'ok' : 'warn'); msg = 'Total lag ' + tot + '. ' + (alive > P ? (alive - P) + ' consumer(s) are idle: more consumers than partitions adds nothing.' : 'Stable.'); }
+    st.textContent = msg;
+    $('banner').className = 'banner' + (rebal > 0 ? ' rb' : ''); $('banner').textContent = rebal > 0 ? 'REBALANCING: every consumer is paused while partitions are re-assigned' : (paused ? 'Paused' : 'Running: producing ' + rate + ' / tick, each consumer reads up to ' + cap + ' / tick');
+  }
+  $('add').onclick = function () { addC(false); render(); };
+  $('rem').onclick = function () { var l = C.filter(function (c) { return c.alive; }); if (!l.length) return; var c = l[l.length - 1]; C = C.filter(function (x) { return x !== c; }); rangeAssign(); rebal = 1; log('Consumer ' + c.id + ' left the group cleanly: REBALANCE', 'warn'); render(); };
+  $('crash').onclick = function () { var l = C.filter(function (c) { return c.alive; }); if (!l.length) return; var c = l[0]; c.alive = false; c.detect = 3; log('Consumer ' + c.id + ' CRASHED. Its partitions are stalled until the session timeout expires', 'bad'); render(); };
+  $('pause').onclick = function () { paused = !paused; this.textContent = paused ? 'Resume' : 'Pause'; render(); };
+  $('creset').onclick = reset;
+  $('cP').oninput = function () { $('cPv').textContent = this.value; reset(); };
+  $('cR').oninput = function () { rate = +this.value; $('cRv').textContent = rate; };
+  $('cC').oninput = function () { cap = +this.value; $('cCv').textContent = cap; };
+  reset(); timer = setInterval(tick, 700);
+
+  /* delivery semantics */
+  var dgo = $('dgo');
+  dgo.onclick = function () {
+    var mode = $('dm').value, lg = $('dlog'), eff = [0, 0, 0, 0, 0, 0], committed = 0, steps = [], i;
+    lg.innerHTML = ''; dgo.disabled = true; $('dverd').className = 'status'; $('dverd').textContent = 'Running...';
+    function L(m, c) { steps.push(function () { KT.log(lg, m, c); }); }
+    function E(n, why) { steps.push(function () { eff[n]++; draw(); KT.log(lg, '   effect of message ' + n + ' applied' + (why ? ' ' + why : ''), 'ok'); }); }
+    function draw() { var h = ''; for (var k = 1; k <= 5; k++) h += '<div class="e' + Math.min(eff[k], 2) + '">msg ' + k + '<br><b>applied ' + eff[k] + '&times;</b></div>'; $('eff').innerHTML = h; }
+    draw();
+    function run(m) {
+      if (mode === 'before') {
+        for (i = 1; i <= 2; i++) { L('commit offset ' + i + ', then process message ' + i); E(i); }
+        L('commit offset 3...', 'info'); L('CRASH while processing message 3', 'bad');
+        L('Restart: resume from committed offset, which already says "3 done". Next is message 4', 'warn');
+        for (i = 4; i <= 5; i++) { L('commit offset ' + i + ', then process message ' + i); E(i); }
+      } else if (mode === 'after' || mode === 'idem') {
+        for (i = 1; i <= 2; i++) { L('process message ' + i + ', then commit offset ' + i); E(i); }
+        L('process message 3...'); E(3); L('CRASH before the offset commit for message 3', 'bad');
+        L('Restart: committed offset is still 2, so message 3 is delivered AGAIN', 'warn'); L('process message 3 again');
+        if (mode === 'idem') { steps.push(function () { KT.log(lg, '   idempotent handler: "order 3 already recorded", no second effect', 'info'); }); } else E(3, '(DUPLICATE)');
+        L('commit offset 3');
+        for (i = 4; i <= 5; i++) { L('process message ' + i + ', then commit offset ' + i); E(i); }
+      } else {
+        for (i = 1; i <= 2; i++) { L('begin transaction; process message ' + i + '; write result + commit offset atomically'); E(i); }
+        L('begin transaction; process message 3...'); L('CRASH before the transaction commits: the transaction is ABORTED, nothing is visible and the offset did not move', 'bad');
+        L('Restart: message 3 is re-read, processed and committed in one atomic step', 'warn'); E(3);
+        for (i = 4; i <= 5; i++) { L('begin transaction; process message ' + i + '; commit atomically'); E(i); }
+      }
+    }
+    run(mode);
+    steps.push(function () {
+      var lost = eff.slice(1).some(function (x) { return x === 0; }), dup = eff.slice(1).some(function (x) { return x > 1; }), v = $('dverd');
+      if (lost) { v.className = 'status bad'; v.innerHTML = '<b>Message lost.</b> Committing before processing means a crash skips the message forever. Acceptable only when losing data does not matter.'; }
+      else if (dup) { v.className = 'status warn'; v.innerHTML = '<b>Duplicate effect.</b> Nothing was lost, but message 3 was applied twice. Your handler must tolerate repeats (idempotency).'; }
+      else { v.className = 'status ok'; v.innerHTML = '<b>Every message applied exactly once.</b>' + (mode === 'idem' ? ' The message was redelivered, but the idempotent handler ignored the repeat.' : ' The transaction made processing and the offset commit atomic.'); }
+      dgo.disabled = false;
+    });
+    var k = 0; (function go() { steps[k](); k++; if (k < steps.length) setTimeout(go, 420); })();
+  };
+
+  KT.quiz($('q5'), 'm5', 'Quick check', [
+    { q: 'A topic has 4 partitions and one group has 6 consumers. What happens?', o: ['All 6 read in parallel', '4 consumers read, 2 are idle', 'Kafka adds 2 partitions', 'Messages are duplicated to all 6'], a: 1, why: 'A partition goes to exactly one consumer in a group. Extra consumers are idle standbys.' },
+    { q: 'Two different applications use different group.ids on the same topic. Do they share the messages?', o: ['Yes, each message goes to only one app', 'No, each group receives every message independently', 'Only the first group gets data', 'They conflict and fail'], a: 1, why: 'Offsets are tracked per group, so groups are independent readers of the same log.' },
+    { q: 'What is consumer lag?', o: ['Network latency', 'Log end offset minus committed offset', 'Time since the last heartbeat', 'The number of consumers missing'], a: 1, why: 'It is the number of records written but not yet processed by the group.' },
+    { q: 'Which order gives at-least-once delivery?', o: ['Commit offset, then process', 'Process, then commit offset', 'Process only', 'Commit only'], a: 1, why: 'If you crash after processing but before committing, the record is redelivered, so it may repeat but is never lost.' },
+    { q: 'A slow handler takes longer than max.poll.interval.ms. What happens?', o: ['Kafka waits forever', 'The consumer is removed from the group and a rebalance starts', 'The topic is paused', 'Offsets are deleted'], a: 1, why: 'The group coordinator assumes the consumer is stuck, evicts it and redelivers its partitions elsewhere.' },
+    { q: 'auto.offset.reset=earliest. When does it apply?', o: ['Always', 'Only when the group has no committed offset for a partition', 'Only after a rebalance', 'Only for new topics'], a: 1, why: 'Once an offset is committed, the group resumes from it regardless of this setting.' }
+  ]);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>7. Kafka on your Kubernetes | Kafka Training</title>
+<script src="../assets/js/theme.js"></script>
+<link rel="stylesheet" href="../assets/css/style.css">
+<style>
+  svg .clk { cursor: pointer; } svg .clk:hover rect { stroke-width: 2.5; } svg .clk.sel rect { stroke-width: 3; }
+  .info { min-height: 96px; }
+  .envrow td:first-child { font-family: var(--mono); font-size: .8rem; white-space: nowrap; }
+</style>
+</head>
+<body data-root=".." data-module="7">
+<aside class="side" id="side"></aside>
+<main class="main" id="main">
+
+<div class="kicker">Module 7 of 10 &middot; On your Kubernetes</div>
+<h1>Kafka on your Kubernetes</h1>
+<p class="lead">Now the theory meets your real cluster. See what was deployed in <code>devk8s</code>, why each piece exists, how clients find the brokers, and what Kubernetes does when a broker dies.</p>
+<div class="meta"><span class="pill">20 minutes</span><span class="pill">clickable architecture</span><span class="pill">annotated manifest</span></div>
+<div class="goals"><h4>By the end you can</h4><ul>
+<li>Describe every Kubernetes object in the Kafka deployment and why it is there</li>
+<li>Explain how a client in the cluster discovers and reaches each broker</li>
+<li>Map a Kafka setting to the environment variable that sets it</li>
+<li>Predict what Kubernetes and Kafka each do when a pod or node fails</li></ul></div>
+
+<h2 class="reveal">1. The architecture: click any part</h2>
+<figure class="fig reveal">
+<svg viewBox="0 0 680 350" role="img" aria-label="Kafka on Kubernetes: three broker pods on three worker nodes, each with a Ceph volume, behind two services">
+  <defs><marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+  <g class="nd c-gray clk" data-k="clients"><rect x="240" y="8" width="200" height="40" rx="8"/><text class="th" x="340" y="28" text-anchor="middle" dominant-baseline="central">Client applications</text></g>
+  <g class="nd c-blue clk" data-k="svc"><rect x="120" y="68" width="210" height="44" rx="8"/><text class="th" x="225" y="90" text-anchor="middle" dominant-baseline="central">Service: kafka (ClusterIP)</text></g>
+  <g class="nd c-blue clk" data-k="headless"><rect x="350" y="68" width="210" height="44" rx="8"/><text class="th" x="455" y="90" text-anchor="middle" dominant-baseline="central">Service: kafka-headless</text></g>
+  <line class="ln" x1="300" y1="48" x2="225" y2="66" marker-end="url(#ah)"/><line class="ln" x1="380" y1="48" x2="455" y2="66" marker-end="url(#ah)"/>
+  <polyline class="ln" points="225,112 225,130 455,130 455,112"/><polyline class="ln" points="120,130 560,130"/>
+  <line class="ln" x1="120" y1="130" x2="120" y2="174" marker-end="url(#ah)"/><line class="ln" x1="340" y1="130" x2="340" y2="174" marker-end="url(#ah)"/><line class="ln" x1="560" y1="130" x2="560" y2="174" marker-end="url(#ah)"/>
+  <g class="clk" data-k="node"><rect class="cont" x="20" y="148" width="200" height="190" rx="14"/><rect class="cont" x="240" y="148" width="200" height="190" rx="14"/><rect class="cont" x="460" y="148" width="200" height="190" rx="14"/></g>
+  <text class="ts" x="34" y="166">worker ...x7dkv</text><text class="ts" x="254" y="166">worker ...zj565</text><text class="ts" x="474" y="166">worker ...s4kkh</text>
+  <g class="nd c-purple clk" data-k="pod"><rect x="40" y="178" width="160" height="62" rx="10"/><text class="th" x="120" y="200" text-anchor="middle" dominant-baseline="central">Pod kafka-0</text><text class="ts" x="120" y="220" text-anchor="middle" dominant-baseline="central">broker + controller, id 0</text></g>
+  <g class="nd c-purple clk" data-k="pod"><rect x="260" y="178" width="160" height="62" rx="10"/><text class="th" x="340" y="200" text-anchor="middle" dominant-baseline="central">Pod kafka-1</text><text class="ts" x="340" y="220" text-anchor="middle" dominant-baseline="central">broker + controller, id 1</text></g>
+  <g class="nd c-purple clk" data-k="pod"><rect x="480" y="178" width="160" height="62" rx="10"/><text class="th" x="560" y="200" text-anchor="middle" dominant-baseline="central">Pod kafka-2</text><text class="ts" x="560" y="220" text-anchor="middle" dominant-baseline="central">broker + controller, id 2</text></g>
+  <g class="nd c-coral clk" data-k="pvc"><rect x="40" y="262" width="160" height="56" rx="10"/><text class="th" x="120" y="282" text-anchor="middle" dominant-baseline="central">PVC data-kafka-0</text><text class="ts" x="120" y="300" text-anchor="middle" dominant-baseline="central">5 Gi Ceph RBD</text></g>
+  <g class="nd c-coral clk" data-k="pvc"><rect x="260" y="262" width="160" height="56" rx="10"/><text class="th" x="340" y="282" text-anchor="middle" dominant-baseline="central">PVC data-kafka-1</text><text class="ts" x="340" y="300" text-anchor="middle" dominant-baseline="central">5 Gi Ceph RBD</text></g>
+  <g class="nd c-coral clk" data-k="pvc"><rect x="480" y="262" width="160" height="56" rx="10"/><text class="th" x="560" y="282" text-anchor="middle" dominant-baseline="central">PVC data-kafka-2</text><text class="ts" x="560" y="300" text-anchor="middle" dominant-baseline="central">5 Gi Ceph RBD</text></g>
+  <line class="ln" x1="120" y1="240" x2="120" y2="260"/><line class="ln" x1="340" y1="240" x2="340" y2="260"/><line class="ln" x1="560" y1="240" x2="560" y2="260"/>
+</svg>
+<figcaption>Click a component to read what it does.</figcaption>
+</figure>
+<div class="card info reveal" id="info"><b>Pick a component above.</b></div>
+
+<h2 class="reveal">2. What is deployed right now</h2>
+<div class="callout real reveal"><strong class="ttl">Real output from your cluster</strong>
+<pre data-nocopy style="margin-bottom:0"><code><span class="p">$</span> kubectl -n kafka get pods,svc,pvc,pdb -o wide
+pod/kafka-0        1/1  Running  node devk8s-workers-rhmwv-x7dkv
+pod/kafka-1        1/1  Running  node devk8s-workers-rhmwv-zj565
+pod/kafka-2        1/1  Running  node devk8s-workers-rhmwv-s4kkh
+pod/kafka-client   1/1  Running  node devk8s-workers-rhmwv-x7dkv
+
+service/kafka            ClusterIP  10.104.47.77  9092/TCP
+service/kafka-headless   ClusterIP  None          9092/TCP,9093/TCP
+
+persistentvolumeclaim/data-kafka-0..2   Bound  5Gi  RWO  ceph-block
+poddisruptionbudget.policy/kafka        MIN AVAILABLE 2   ALLOWED DISRUPTIONS 1</code></pre></div>
+
+<h2 class="reveal">3. The manifest, piece by piece</h2>
+<p class="reveal">Everything lives in <code>labs/kafka/kafka.yaml</code>. Open each section to see why it is there.</p>
+<details class="reveal" open><summary>Namespace: keep Istio out of Kafka's way</summary><div>
+<pre><code>apiVersion: v1
+kind: Namespace
+metadata:
+  name: kafka
+  labels:
+    istio-injection: disabled</code></pre>
+<p>Your cluster runs Istio. Its sidecar proxy would intercept Kafka's TCP traffic and can break Kafka's own protocol handling and add latency. Disabling injection for this namespace keeps broker traffic direct.</p></div></details>
+
+<details class="reveal"><summary>Two Services: one for discovery, one for convenience</summary><div>
+<pre><code>kind: Service
+metadata: { name: kafka-headless }
+spec:
+  clusterIP: None                 # headless: no virtual IP, DNS returns each pod
+  publishNotReadyAddresses: true  # DNS works even before the pod is Ready
+  selector: { app: kafka }
+  ports: [ { name: client, port: 9092 }, { name: controller, port: 9093 } ]</code></pre>
+<ul><li><b><code>kafka-headless</code></b>: gives every pod a stable DNS name, <code>kafka-0.kafka-headless.kafka.svc.cluster.local</code>. Brokers must be individually addressable because clients talk to the specific leader of each partition. <code>publishNotReadyAddresses</code> lets brokers find each other while starting up, which the controller quorum needs.</li>
+<li><b><code>kafka</code></b> (ClusterIP): a normal load-balanced name, good as an initial bootstrap address. After the first contact, clients use the per-pod names.</li></ul></div></details>
+
+<details class="reveal"><summary>StatefulSet: identity that survives restarts</summary><div>
+<pre><code>kind: StatefulSet
+spec:
+  serviceName: kafka-headless
+  replicas: 3
+  podManagementPolicy: Parallel   # start all three together (KRaft needs a quorum to form)
+  template:
+    spec:
+      securityContext: { fsGroup: 1000 }
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector: { matchLabels: { app: kafka } }
+              topologyKey: kubernetes.io/hostname</code></pre>
+<ul><li>A <b>StatefulSet</b> (not a Deployment) because each broker has an identity and its own disk: the pod named <code>kafka-1</code> is always broker 1 and always reattaches <code>data-kafka-1</code>.</li>
+<li><b>Parallel</b>: the default (OrderedReady) would start kafka-0 and wait for it to be Ready, but a lone KRaft node cannot become ready without its quorum peers, so it would deadlock.</li>
+<li><b>Anti-affinity</b>: "never put two kafka pods on the same node". With 3 workers this gives exactly one broker per node. Consequence: you cannot scale to 4 brokers without a 4th worker.</li>
+<li><b><code>fsGroup: 1000</code></b>: the Kafka image runs as user 1000, so the volume must be writable by that group.</li></ul></div></details>
+
+<details class="reveal"><summary>The clever startup command: node id and advertised address from the pod name</summary><div>
+<pre><code>command: ["/bin/bash", "-c"]
+args:
+  - |
+    export KAFKA_NODE_ID="${HOSTNAME##*-}"        # kafka-2  ->  2
+    export KAFKA_ADVERTISED_LISTENERS="PLAINTEXT://${HOSTNAME}.kafka-headless.kafka.svc.cluster.local:9092"
+    exec /etc/kafka/docker/run</code></pre>
+<p>All three pods share one spec, but each broker needs a unique <code>node.id</code> and must <b>advertise</b> its own address. The pod name (<code>kafka-N</code>) provides both. This is the same trick used by most Kafka-on-Kubernetes manifests.</p></div></details>
+
+<details class="reveal"><summary>Kafka configuration through environment variables</summary><div>
+<p>The official image turns any env var starting with <code>KAFKA_</code> into a broker setting: uppercase, dots become underscores. So <code>log.retention.hours</code> becomes <code>KAFKA_LOG_RETENTION_HOURS</code>.</p>
+<div class="tablewrap"><table>
+<tr><th>Env var</th><th>Value</th><th>Meaning</th></tr>
+<tr class="envrow"><td>CLUSTER_ID</td><td>MkU3OEVBNTcwNTJENDM2Qk</td><td>Identity of the cluster. All nodes must share it. Do not change it after data exists.</td></tr>
+<tr class="envrow"><td>KAFKA_PROCESS_ROLES</td><td>broker,controller</td><td>Each node is both (combined mode)</td></tr>
+<tr class="envrow"><td>KAFKA_CONTROLLER_QUORUM_VOTERS</td><td>0@kafka-0...:9093,1@...,2@...</td><td>The three controller voters and their ports</td></tr>
+<tr class="envrow"><td>KAFKA_LISTENERS</td><td>PLAINTEXT://:9092,CONTROLLER://:9093</td><td>Ports the broker listens on (clients, controllers)</td></tr>
+<tr class="envrow"><td>KAFKA_DEFAULT_REPLICATION_FACTOR</td><td>3</td><td>Topics get 3 copies unless told otherwise</td></tr>
+<tr class="envrow"><td>KAFKA_MIN_INSYNC_REPLICAS</td><td>2</td><td>Default minimum for acks=all writes</td></tr>
+<tr class="envrow"><td>KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR</td><td>3</td><td>Consumer offsets are replicated too</td></tr>
+<tr class="envrow"><td>KAFKA_AUTO_CREATE_TOPICS_ENABLE</td><td>false</td><td>Typos do not silently create topics</td></tr>
+<tr class="envrow"><td>KAFKA_LOG_RETENTION_HOURS</td><td>168</td><td>7-day retention</td></tr>
+<tr class="envrow"><td>KAFKA_LOG_SEGMENT_BYTES</td><td>104857600</td><td>100 MiB segments (smaller than the 1 GiB default, to fit the small disks)</td></tr>
+<tr class="envrow"><td>KAFKA_HEAP_OPTS</td><td>-Xms512m -Xmx512m</td><td>JVM heap. Kafka relies on the OS page cache, not a big heap.</td></tr>
+</table></div></div></details>
+
+<details class="reveal"><summary>Storage, and the lost+found lesson</summary><div>
+<pre><code>volumeMounts:
+  - { name: data, mountPath: /var/lib/kafka/data, subPath: kafka }
+volumeClaimTemplates:
+  - metadata: { name: data }
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: ceph-block
+      resources: { requests: { storage: 5Gi } }</code></pre>
+<p><b>volumeClaimTemplates</b> creates one PVC per pod. The pod mounts it at the Kafka data directory.</p>
+<div class="callout warn"><strong class="ttl">A bug we hit while building this lab</strong>A fresh ext4 volume contains a <code>lost+found</code> folder at its root. Kafka treats every folder in its data directory as a topic-partition and crashed: <code>Found directory .../lost+found, 'lost+found' is not in the form of topic-partition</code>. The fix is <code>subPath: kafka</code>, which mounts a clean sub-folder of the volume instead. Remember this symptom: it appears whenever Kafka is pointed at the root of a freshly formatted disk.</div></div></details>
+
+<details class="reveal"><summary>Probes, resources and the PodDisruptionBudget</summary><div>
+<pre><code>resources:
+  requests: { cpu: 250m, memory: 1Gi }
+  limits:   { memory: 1536Mi }
+readinessProbe: { tcpSocket: { port: 9092 }, initialDelaySeconds: 20 }
+livenessProbe:  { tcpSocket: { port: 9092 }, initialDelaySeconds: 60 }
+---
+kind: PodDisruptionBudget
+spec: { minAvailable: 2, selector: { matchLabels: { app: kafka } } }</code></pre>
+<ul><li><b>Memory:</b> 512 MB heap plus roughly 1 GB for the JVM overhead and the page cache the pod can use. A limit that is too small gets the pod <code>OOMKilled</code>.</li>
+<li><b>PDB minAvailable 2:</b> voluntary disruptions (like <code>kubectl drain</code>) may never take more than one broker at a time. It protects the quorum and the <code>min.insync.replicas=2</code> rule.</li>
+<li><b>Limitation to remember:</b> the readiness probe only checks that port 9092 answers. A restarted broker becomes "Ready" <i>before</i> it has caught up and rejoined the ISR. Module 9 shows how to wait properly.</li></ul></div></details>
+
+<h2 class="reveal">4. How a client finds the brokers</h2>
+<p class="reveal">Kafka clients connect in <b>two steps</b>. Understanding this removes most connection mysteries.</p>
+<div class="sim reveal">
+  <div class="sim-h">Walkthrough: client connection</div>
+  <div class="sim-b">
+    <div class="flow" id="cflow">
+      <div class="fbox c-gray"><b>Your app</b><small>in any namespace</small></div><div class="farr">&rarr;</div>
+      <div class="fbox c-blue"><b>Bootstrap</b><small>any one broker</small></div><div class="farr">&rarr;</div>
+      <div class="fbox c-purple"><b>Metadata</b><small>topic &rarr; leader map</small></div><div class="farr">&rarr;</div>
+      <div class="fbox c-teal"><b>Leader brokers</b><small>direct connections</small></div>
+    </div>
+    <div id="cctl"></div>
+  </div>
+</div>
+<div class="callout warn reveal"><strong class="ttl">Why <code>kubectl port-forward</code> does not work for Kafka</strong>In step 3 the broker tells the client <i>its own advertised name</i>, such as <code>kafka-1.kafka-headless.kafka.svc.cluster.local:9092</code>. A laptop cannot resolve that name, and a port-forward only tunnels one pod. The first connection succeeds, then the redirect fails. To reach Kafka from outside you need an extra <b>external listener</b> (NodePort or LoadBalancer) that advertises addresses the outside world can use. That is a separate configuration, intentionally not part of this lab.</div>
+<p class="reveal">So applications inside your cluster use:</p>
+<pre class="reveal"><code>bootstrap.servers = kafka-0.kafka-headless.kafka.svc.cluster.local:9092,kafka-1.kafka-headless.kafka.svc.cluster.local:9092,kafka-2.kafka-headless.kafka.svc.cluster.local:9092</code></pre>
+<p class="reveal small muted">From another namespace the full name above is needed. Inside the <code>kafka</code> namespace, <code>kafka-0.kafka-headless:9092</code> is enough.</p>
+
+<h2 class="reveal">5. What happens when things fail</h2>
+<div class="tablewrap reveal"><table>
+<tr><th>Event</th><th>Kubernetes does</th><th>Kafka does</th><th>You do</th></tr>
+<tr><td>A broker pod crashes or is deleted</td><td>StatefulSet recreates <code>kafka-N</code> on the same node or another, reattaching the same PVC</td><td>Controller moves leadership to in-sync replicas; the returning broker catches up and rejoins ISR</td><td>Nothing. Verify ISR is full again.</td></tr>
+<tr><td>A worker node dies</td><td>After the node is marked NotReady and pods are evicted, the pod is rescheduled. With anti-affinity and 3 nodes it stays <b>Pending</b> until the node returns (no other node is free). The Ceph volume re-attaches wherever it lands.</td><td>Runs on 2 brokers: leaders move, <code>acks=all</code> still works (2 &ge; min ISR)</td><td>Repair or replace the node</td></tr>
+<tr><td>Planned node maintenance (<code>drain</code>)</td><td>PDB allows evicting one broker at a time</td><td>Same as a broker restart</td><td>Wait for ISR to be full before the next node</td></tr>
+<tr><td>Two brokers lost</td><td>Pods Pending/crashing</td><td>No controller quorum, writes refused (NOT_ENOUGH_REPLICAS)</td><td>Restore a broker first</td></tr>
+<tr><td>Volume lost or corrupted</td><td>Pod cannot start or starts empty</td><td>An empty broker re-replicates everything from the other replicas (this is what RF=3 is for)</td><td>Replace the PVC; avoid doing it on two brokers at once</td></tr>
+</table></div>
+
+<h2 class="reveal">Check yourself</h2>
+<div id="q7"></div>
+
+</main>
+<script src="../assets/js/app.js"></script>
+<script>
+(function () {
+  var D = {
+    clients: ['Client applications', 'Producers and consumers running anywhere in the cluster. They use <code>kafka-N.kafka-headless.kafka.svc.cluster.local:9092</code> as bootstrap servers. Outside the cluster they cannot connect yet (no external listener).'],
+    svc: ['Service: kafka (ClusterIP)', 'A normal Kubernetes service with a virtual IP that load-balances across all three brokers. Handy as a single bootstrap name, but only for the very first contact. Kafka clients then connect to specific brokers directly.'],
+    headless: ['Service: kafka-headless', 'No virtual IP. DNS returns the pods themselves and gives each one a stable name (<code>kafka-0.kafka-headless...</code>). Brokers advertise these names, so clients and the controller quorum can address each broker individually.'],
+    pod: ['Pod kafka-N (broker + controller)', 'One Kafka process playing two roles: <b>broker</b> (stores partitions, serves clients) and <b>KRaft controller</b> (keeps cluster metadata). Its node id equals the pod ordinal. Each runs on a different worker node because of anti-affinity.'],
+    pvc: ['PersistentVolumeClaim data-kafka-N', 'A 5 GiB block volume from Ceph RBD (<code>ceph-block</code> StorageClass), mounted at <code>/var/lib/kafka/data</code>. It holds partition logs and the KRaft metadata. If the pod is recreated it reattaches the <b>same</b> volume, so the broker keeps its data. The StorageClass reclaim policy is Delete: deleting the PVC deletes the data.'],
+    node: ['Worker node', 'Your devk8s workers. Anti-affinity puts exactly one broker on each, so a single node failure removes at most one replica of any partition.']
+  };
+  var info = document.getElementById('info');
+  document.querySelectorAll('svg .clk').forEach(function (g) {
+    g.addEventListener('click', function () {
+      document.querySelectorAll('svg .clk').forEach(function (x) { x.classList.remove('sel'); }); g.classList.add('sel');
+      var d = D[g.getAttribute('data-k')]; info.innerHTML = '<b>' + d[0] + '</b><p style="margin:6px 0 0">' + d[1] + '</p>';
+    });
+  });
+  info.innerHTML = '<b>Pick a component above.</b><p class="muted" style="margin:6px 0 0">Try the pod, the headless service and the PVC.</p>';
+
+  var bx = document.querySelectorAll('#cflow .fbox'), ar = document.querySelectorAll('#cflow .farr');
+  KT.stepper(document.getElementById('cctl'), [
+    { t: 'Start with a bootstrap address', d: '<p>The app is configured with one or more broker addresses. It does not need to know all brokers or which partitions live where.</p>' },
+    { t: 'Connect to any one broker', d: '<p>The client opens a connection to one bootstrap broker (any broker can answer) and asks "describe the cluster and the topics I need".</p>' },
+    { t: 'The broker returns metadata', d: '<p>The reply lists every broker with its <b>advertised address</b>, and for each partition which broker is the leader. This map is cached and refreshed when leaders move.</p>' },
+    { t: 'Talk to leaders directly', d: '<p>The producer sends to each partition\'s leader; the consumer fetches from the leaders. So the client needs a <b>network route and DNS name for every broker</b>, not just the bootstrap one.</p>' }
+  ], function (i) {
+    bx.forEach(function (b, n) { b.classList.toggle('on', n === i); b.classList.toggle('seen', n < i); });
+    ar.forEach(function (a, n) { a.classList.toggle('on', n === i - 1); });
+  }, { ms: 3200 });
+
+  KT.quiz(document.getElementById('q7'), 'm7', 'Quick check', [
+    { q: 'Why is Kafka deployed as a StatefulSet and not a Deployment?', o: ['It is faster', 'Each broker needs a stable identity and its own persistent disk', 'Deployments cannot run Java', 'To save CPU'], a: 1, why: 'Pod kafka-1 must always be broker 1 and always reattach its own volume; a StatefulSet guarantees this.' },
+    { q: 'What does pod anti-affinity achieve here?', o: ['Faster networking', 'No two brokers share a worker node, so one node failure loses at most one replica', 'Brokers avoid the control plane', 'Smaller images'], a: 1, why: 'It spreads replicas across failure domains (nodes).' },
+    { q: 'A client connects to the bootstrap broker fine but then fails with UnknownHostException for kafka-1. Why?', o: ['Kafka is down', 'The client received advertised broker names it cannot resolve or reach', 'The topic is deleted', 'Wrong partition count'], a: 1, why: 'After bootstrap, clients connect to each leader using the advertised address. It must be resolvable and reachable from the client.' },
+    { q: 'How would you set log.retention.hours=24 in this deployment?', o: ['Edit server.properties on the pod', 'Set env var KAFKA_LOG_RETENTION_HOURS=24 and restart the brokers', 'Run kubectl scale', 'Delete the PVC'], a: 1, why: 'The image converts KAFKA_* env vars into broker config; changing them rolls the StatefulSet.' },
+    { q: 'What was the cause of the original crash loop when building this lab?', o: ['Out of memory', 'A lost+found folder at the root of the new volume', 'Wrong cluster id', 'Istio sidecar'], a: 1, why: 'Kafka refuses directories that are not topic-partitions. subPath: kafka avoided the volume root.' }
+  ]);
+})();
+</script>
+</body>
+</html>
