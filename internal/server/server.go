@@ -125,6 +125,11 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /clusters/{name}/scale-controlplane", s.requireAuth(s.handleClusterScaleControlPlane))
 	mux.HandleFunc("GET /clusters/{name}/upgrade", s.requireAuth(s.handleClusterUpgradeForm))
 	mux.HandleFunc("POST /clusters/{name}/upgrade", s.requireAuth(s.handleClusterUpgrade))
+	mux.HandleFunc("GET /clusters/{name}/resize", s.requireAuth(s.handleClusterResizeForm))
+	mux.HandleFunc("POST /clusters/{name}/resize", s.requireAuth(s.handleClusterResize))
+	mux.HandleFunc("GET /clusters/{name}/worker-disk", s.requireAuth(s.handleClusterWorkerDiskForm))
+	mux.HandleFunc("POST /clusters/{name}/worker-disk", s.requireAuth(s.handleClusterWorkerDisk))
+	mux.HandleFunc("POST /clusters/{name}/worker-disk/forget", s.requireAuth(s.handleClusterWorkerDiskForget))
 	mux.HandleFunc("POST /clusters/{name}/delete", s.requireAuth(s.handleClusterDelete))
 
 	return withLogging(mux)

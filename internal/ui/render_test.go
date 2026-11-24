@@ -28,6 +28,16 @@ type partialCase struct {
 	mustNotContain []string
 }
 
+// resizeRoleStub mirrors server.resizeRoleView's shape (kept local for the same
+// reason as upgradeTemplateStub: the ui package must not import server).
+type resizeRoleStub struct {
+	Prefix, Label, TemplateName  string
+	Replicas, Sockets, Cores     int
+	MemoryMiB                    int
+	MemoryGiB, Summary           string
+	InMemory, InCores, InSockets string
+}
+
 // upgradeTemplateStub mirrors server.upgradeTemplateView's shape. Kept local
 // so this package doesn't import server (which would be an import cycle).
 type upgradeTemplateStub struct {
@@ -510,6 +520,7 @@ func TestPartialsRenderWithHandlerData(t *testing.T) {
 			mustContain: []string{
 				// The delete/scale forms must carry a real csrf value.
 				`name="csrf" value="csrf-token-here"`,
+				`hx-get="/clusters/demo/worker-disk"`, "Worker data disk",
 				// Scale inputs need a stable id + hx-preserve so the "every
 				// 5s" poll above can't silently revert a value the operator
 				// is mid-typing — see cluster_status.html's comment. A
@@ -571,6 +582,72 @@ func TestPartialsRenderWithHandlerData(t *testing.T) {
 				"Not available as upgrade targets",
 			},
 			mustNotContain: []string{"Start rolling upgrade"},
+		},
+		{
+			name:    "cluster_resize/form",
+			partial: "cluster_resize",
+			data: map[string]any{
+				"ClusterName": "prodk8s", "CSRF": "csrf-token-here",
+				"ControlPlane": resizeRoleStub{Prefix: "cp", Label: "Control plane", Replicas: 1, Sockets: 1, Cores: 4, MemoryMiB: 8192, MemoryGiB: "8", Summary: "1 socket(s) × 4 core(s) · 8 GiB RAM"},
+				"Workers":      resizeRoleStub{Prefix: "w", Label: "Workers", Replicas: 3, Sockets: 1, Cores: 8, MemoryMiB: 16384, MemoryGiB: "16", Summary: "1 socket(s) × 8 core(s) · 16 GiB RAM", InMemory: "25"},
+			},
+			mustContain: []string{
+				`hx-post="/clusters/prodk8s/resize"`, "csrf-token-here",
+				`name="cp_memory_gib"`, `name="w_memory_gib"`, `name="w_cores"`, `name="cp_sockets"`,
+				`placeholder="16"`, // today's worker RAM shown as the hint
+				`value="25"`,       // what the operator typed survives a validation error
+				"3 nodes", "1 node ·", "Ceph/Rook OSD disks",
+				`name="ack"`, "Start rolling resize",
+			},
+		},
+		{
+			name:    "cluster_resize/unsized-template",
+			partial: "cluster_resize",
+			data: map[string]any{
+				"ClusterName": "devk8s", "CSRF": "t",
+				"ControlPlane": resizeRoleStub{Prefix: "cp", Label: "Control plane", Replicas: 1, Summary: "size comes from the Proxmox template (not set on the machine template)"},
+				"Workers":      resizeRoleStub{Prefix: "w", Label: "Workers", Replicas: 3, Summary: "size comes from the Proxmox template (not set on the machine template)"},
+			},
+			mustContain:    []string{`placeholder="unchanged"`, "not set on the machine template"},
+			mustNotContain: []string{`placeholder="0"`},
+		},
+		{
+			name:    "cluster_resize/error-hides-form",
+			partial: "cluster_resize",
+			data: map[string]any{
+				"ClusterName": "devk8s", "CSRF": "t", "Error": "reading machine template devk8s-worker: not found",
+			},
+			mustContain:    []string{"reading machine template devk8s-worker: not found"},
+			mustNotContain: []string{"Start rolling resize"},
+		},
+		{
+			name:    "cluster_worker_disk/form-with-policy",
+			partial: "cluster_worker_disk",
+			data: map[string]any{
+				"ClusterName": "devk8s", "CSRF": "csrf-token-here",
+				"Storages": []string{"local-lvm", "ceph-pool"}, "InStorage": "ceph-pool", "InSize": "150",
+				"WorkerCount": 3, "Skipped": []string{"devk8s-workers-x: its VM is not created yet"},
+				"Policy": struct {
+					Storage string
+					SizeGiB int
+				}{"local-lvm", 100},
+			},
+			mustContain: []string{
+				`hx-post="/clusters/devk8s/worker-disk"`, `hx-post="/clusters/devk8s/worker-disk/forget"`, "csrf-token-here",
+				`name="storage"`, `name="size_gib"`, `<option value="ceph-pool" selected>`, `value="150"`,
+				"Active policy", "100 GiB", "3 worker VMs will be processed", "its VM is not created yet",
+				"/dev/sdb", "Control-plane nodes are never touched", "Add disk to workers",
+			},
+			mustNotContain: []string{`<option value="local-lvm" selected>`},
+		},
+		{
+			name:    "cluster_worker_disk/no-discovery-text-input",
+			partial: "cluster_worker_disk",
+			data: map[string]any{
+				"ClusterName": "devk8s", "CSRF": "t", "InStorage": "local-lvm", "WorkerCount": 1, "Error": "disk size must be a whole number of GiB",
+			},
+			mustContain:    []string{`<input type="text" name="storage" value="local-lvm"`, "1 worker VM will", "disk size must be a whole number"},
+			mustNotContain: []string{"Active policy", "<select", "worker-disk/forget"},
 		},
 		{
 			name:    "cluster_upgrade/error",

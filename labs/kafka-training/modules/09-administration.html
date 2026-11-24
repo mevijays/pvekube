@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>9. Administration and troubleshooting | Kafka Training</title>
+<script src="../assets/js/theme.js"></script>
+<link rel="stylesheet" href="../assets/css/style.css">
+<style>
+  .sym { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+  .sym button { font: inherit; font-size: .84rem; padding: 7px 12px; border-radius: 99px; border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer; transition: all .15s; text-align: left; }
+  .sym button:hover { border-color: var(--accent); } .sym button.on { background: var(--accent); color: var(--bg); border-color: var(--accent); font-weight: 600; }
+  .ts { border: 1px solid var(--border); border-radius: 12px; background: var(--surface); padding: 6px 20px 14px; }
+  .ts h4 { margin: 14px 0 6px; font-size: .78rem; text-transform: uppercase; letter-spacing: .08em; color: var(--accent); }
+  .ts ol, .ts ul { margin-bottom: .4em; } .ts pre { margin: .4em 0 .8em; }
+  .bld { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px 16px; margin-bottom: 12px; }
+  .bld label { display: flex; flex-direction: column; gap: 4px; font-size: .8rem; color: var(--muted); } .bld label[hidden] { display: none; }
+</style>
+</head>
+<body data-root=".." data-module="9">
+<aside class="side" id="side"></aside>
+<main class="main" id="main">
+
+<div class="kicker">Module 9 of 10 &middot; On your Kubernetes</div>
+<h1>Administration and troubleshooting</h1>
+<p class="lead">Running Kafka is mostly watching a handful of numbers, doing a few operations safely, and knowing where to look when something breaks. This module gives you the checklist, the safe procedures, and a symptom-driven troubleshooter.</p>
+<div class="meta"><span class="pill">40 minutes</span><span class="pill">command builder</span><span class="pill">12-symptom troubleshooter</span></div>
+<div class="goals"><h4>By the end you can</h4><ul>
+<li>Run a daily health check in under a minute and read the result</li>
+<li>Restart brokers safely, one at a time, without losing availability</li>
+<li>Resize disks, add partitions and change retention</li>
+<li>Diagnose the common failures from the symptom, in a fixed order</li></ul></div>
+
+<h2 class="reveal">1. The five numbers that matter</h2>
+<div class="tablewrap reveal"><table>
+<tr><th>Signal</th><th>Healthy</th><th>If it is not</th></tr>
+<tr><td><b>Offline partitions</b></td><td>0</td><td>Data unavailable right now. Drop everything.</td></tr>
+<tr><td><b>Under-replicated partitions</b></td><td>0 (brief blips after restarts)</td><td>A replica is down or lagging. Redundancy is reduced.</td></tr>
+<tr><td><b>Under-min-ISR partitions</b></td><td>0</td><td>acks=all writes are being refused.</td></tr>
+<tr><td><b>Consumer lag</b></td><td>stable, small</td><td>Growing lag means consumers cannot keep up.</td></tr>
+<tr><td><b>Disk used per broker</b></td><td>below 70%</td><td>A full disk crashes the broker. Act at 80%.</td></tr>
+</table></div>
+<p class="reveal small muted">Your lab has no Prometheus or Grafana installed, so you read these with the CLI. In a real deployment you would export the same signals as metrics (JMX exporter) and alert on them.</p>
+
+<h2 class="reveal">2. The one-minute health check</h2>
+<p class="reveal">Run this from your Mac. It prints everything in the table above.</p>
+<pre class="reveal"><code>alias k='kubectl --context devk8s-admin@devk8s -n kafka'     # same alias as Lab 0
+
+k get pods -o wide
+k exec kafka-client -- bash -c '
+B=/opt/kafka/bin
+echo "== brokers registered";       $B/kafka-broker-api-versions.sh --bootstrap-server $BS 2&gt;/dev/null | grep -E "^kafka" | cut -d" " -f1,3-5
+echo "== controller quorum";        $B/kafka-metadata-quorum.sh --bootstrap-server $BS describe --status | grep -E "LeaderId|MaxFollowerLag:"
+echo "== under-replicated (want none)"; $B/kafka-topics.sh --bootstrap-server $BS --describe --under-replicated-partitions
+echo "== offline (want none)";      $B/kafka-topics.sh --bootstrap-server $BS --describe --unavailable-partitions
+echo "== consumer groups";          $B/kafka-consumer-groups.sh --bootstrap-server $BS --list'
+for i in 0 1 2; do echo "== disk kafka-$i"; k exec kafka-$i -- df -h /var/lib/kafka/data | tail -1; done</code></pre>
+<div class="callout real reveal"><strong class="ttl">Real output from your cluster</strong>
+<pre data-nocopy style="margin-bottom:0"><code>kafka-0   1/1  Running  0 restarts  devk8s-workers-rhmwv-x7dkv
+kafka-1   1/1  Running  0 restarts  devk8s-workers-rhmwv-zj565
+kafka-2   1/1  Running  0 restarts  devk8s-workers-rhmwv-s4kkh
+== brokers registered         3 lines: ids 0, 1, 2
+== controller quorum          LeaderId: 1    MaxFollowerLag: 0
+== under-replicated (want none)             <span class="c">(empty = good)</span>
+== offline (want none)                      <span class="c">(empty = good)</span>
+== consumer groups            billing
+== disk kafka-0..2            4.9G size, 1% used</code></pre>
+Read it as: 3 brokers, a controller leader with no lagging follower, nothing under-replicated or offline, tiny disk use. Anything different from this deserves a look.</div>
+
+<h2 class="reveal">3. Safe operations</h2>
+
+<h3 class="reveal">Rolling restart (config change, image upgrade, node maintenance)</h3>
+<p class="reveal">Kubernetes will happily restart the next broker as soon as the previous one reports Ready. But <b>Ready here only means port 9092 answers</b>, not that the broker has caught up and rejoined the ISR. If you restart the next broker too early, two replicas are missing at once, you drop below <code>min.insync.replicas</code>, and writes fail. The fix is to wait for the cluster to be <b>fully in sync</b> between restarts:</p>
+<pre class="reveal"><code>for i in 2 1 0; do
+  echo "restarting kafka-$i"
+  kubectl --context devk8s-admin@devk8s -n kafka delete pod kafka-$i
+  sleep 3
+  kubectl --context devk8s-admin@devk8s -n kafka wait --for=condition=Ready pod/kafka-$i --timeout=300s
+  <span class="c"># the important part: wait until no partition is under-replicated</span>
+  until [ -z "$(kubectl --context devk8s-admin@devk8s -n kafka exec kafka-client -- bash -c \
+      '/opt/kafka/bin/kafka-topics.sh --bootstrap-server $BS --describe --under-replicated-partitions 2&gt;/dev/null')" ]; do
+    sleep 5
+  done
+  echo "kafka-$i is fully in sync"
+done
+<span class="c"># afterwards, put leaders back on their preferred brokers</span>
+kubectl --context devk8s-admin@devk8s -n kafka exec kafka-client -- bash -c \
+  '/opt/kafka/bin/kafka-leader-election.sh --bootstrap-server $BS --election-type preferred --all-topic-partitions'</code></pre>
+<div class="callout real reveal"><strong class="ttl">Real result on your cluster</strong>
+<pre data-nocopy style="margin-bottom:0"><code>[  0 s] restarting kafka-2
+[ 33 s] kafka-2 Ready          [ 36 s] kafka-2 fully in sync again
+[ 36 s] restarting kafka-1
+[ 65 s] kafka-1 Ready          [ 68 s] kafka-1 fully in sync again
+[ 68 s] restarting kafka-0
+[105 s] kafka-0 Ready          [109 s] kafka-0 fully in sync again
+Successfully completed leader election (PREFERRED) for partitions __consumer_offsets-15, ...</code></pre>
+All three brokers restarted one at a time in <b>109 seconds</b>, so at least 2 of 3 brokers were always up and <code>acks=all</code> writes stayed possible. Each pod took about 30 seconds to become Ready. On this almost empty cluster the ISR was already full the moment each pod was Ready, so the wait loop did not have to poll. With gigabytes per partition, catching up takes minutes, and that is exactly the wait the loop protects. The final command moved leadership back to each partition's preferred broker.</div>
+<div class="callout note reveal"><strong class="ttl">If you changed the manifest</strong>With <code>kubectl apply</code> the StatefulSet restarts pods itself, one at a time, in reverse order, waiting only for Ready. For a production-grade rollout, either use the loop above, or set <code>updateStrategy.rollingUpdate.partition</code> to step through pods manually and check the ISR between steps.</div>
+
+<h3 class="reveal">Grow a disk (no downtime)</h3>
+<p class="reveal">Your StorageClass <code>ceph-block</code> allows volume expansion. This procedure was not run in the lab (it would permanently change your volumes), but it is the standard one:</p>
+<pre class="reveal"><code>for i in 0 1 2; do
+  kubectl --context devk8s-admin@devk8s -n kafka patch pvc data-kafka-$i -p '{"spec":{"resources":{"requests":{"storage":"10Gi"}}}}'
+done
+kubectl --context devk8s-admin@devk8s -n kafka get pvc -w          <span class="c"># wait for CAPACITY 10Gi, ext4 grows online</span>
+kubectl --context devk8s-admin@devk8s -n kafka exec kafka-0 -- df -h /var/lib/kafka/data</code></pre>
+<p class="reveal small muted">A StatefulSet's <code>volumeClaimTemplates</code> cannot be edited in place. To keep the YAML in sync, update <code>kafka.yaml</code>, then <code>kubectl delete sts kafka --cascade=orphan</code> and <code>kubectl apply -f kafka.yaml</code>: the pods and volumes keep running.</p>
+
+<h3 class="reveal">Change retention for one topic (instant, no restart)</h3>
+<pre class="reveal"><code>kafka-configs.sh --bootstrap-server $BS --entity-type topics --entity-name orders --alter --add-config retention.ms=86400000</code></pre>
+
+<h3 class="reveal">Change a broker-wide default (rolling restart)</h3>
+<p class="reveal">Edit the <code>KAFKA_*</code> env var in <code>kafka.yaml</code>, apply, and watch the restart with the safe loop above.</p>
+
+<h3 class="reveal">Add partitions</h3>
+<pre class="reveal"><code>kafka-topics.sh --bootstrap-server $BS --alter --topic orders --partitions 6</code></pre>
+<p class="reveal small muted">Increase only. Keyed topics: existing keys may move to different partitions for new records.</p>
+
+<h3 class="reveal">Add brokers or increase replication factor</h3>
+<p class="reveal">Kafka does <b>not</b> automatically move existing partitions onto a new broker. You generate a plan with <code>kafka-reassign-partitions.sh --generate</code>, review it, run it with <code>--execute</code> (optionally throttled so it does not starve production traffic), and confirm with <code>--verify</code>. In this lab you cannot add a 4th broker anyway: pod anti-affinity needs a 4th worker node.</p>
+
+<h2 class="reveal">4. Command builder</h2>
+<p class="reveal">Pick an operation and fill in the fields. The command is ready to paste into the <code>kafka-client</code> pod.</p>
+<div class="sim reveal">
+  <div class="sim-h">Tool: Kafka CLI command builder</div>
+  <div class="sim-b">
+    <div class="bld">
+      <label>Operation
+        <select id="op">
+          <option value="create">Create topic</option><option value="describe">Describe topic</option><option value="partitions">Increase partitions</option>
+          <option value="retention">Set retention</option><option value="compact">Make topic compacted</option><option value="delete">Delete topic</option>
+          <option value="offsets">Earliest / latest offsets</option><option value="group">Describe consumer group</option><option value="reset">Reset consumer group offsets</option>
+          <option value="urp">Find under-replicated partitions</option><option value="tail">Read last messages of a topic</option>
+        </select></label>
+      <label data-f="topic">Topic <input type="text" id="topic" value="orders"></label>
+      <label data-f="parts">Partitions <input type="number" id="parts" value="3" min="1" max="50"></label>
+      <label data-f="rf">Replication factor <select id="rf"><option>1</option><option>2</option><option selected>3</option></select></label>
+      <label data-f="ret">Retention <select id="ret"><option value="3600000">1 hour</option><option value="86400000">1 day</option><option value="604800000" selected>7 days</option><option value="2592000000">30 days</option><option value="-1">forever</option></select></label>
+      <label data-f="minisr">min.insync.replicas <select id="minisr"><option>1</option><option selected>2</option><option>3</option></select></label>
+      <label data-f="group">Group <input type="text" id="group" value="billing"></label>
+      <label data-f="reset">Reset to <select id="reset"><option value="--to-earliest">earliest</option><option value="--to-latest">latest</option><option value="--shift-by -100">100 records back</option><option value="--to-datetime 2026-11-22T00:00:00.000">a date/time</option></select></label>
+    </div>
+    <pre id="cmd" style="margin:0"><code></code></pre>
+    <div class="status" id="cmdnote"></div>
+  </div>
+</div>
+
+<h2 class="reveal">5. Troubleshooter</h2>
+<p class="reveal">Pick the symptom you see. You get what it usually means, the checks to run <b>in order</b>, and the fix. Rule of thumb: <b>look at Kubernetes first (is everything running?), then at Kafka (is it healthy?), then at the client.</b></p>
+<div class="sym reveal" id="sym"></div>
+<div class="ts reveal" id="tsout"></div>
+
+<h2 class="reveal">6. Reading broker logs</h2>
+<pre class="reveal"><code>k logs kafka-0 --tail=100                       <span class="c"># recent</span>
+k logs kafka-0 --previous                       <span class="c"># the crashed container's last words</span>
+k logs kafka-0 | grep -E "ERROR|FATAL"          <span class="c"># problems</span>
+k logs kafka-0 | grep -iE "Shrinking ISR|Expanding ISR"     <span class="c"># replicas leaving and joining the ISR</span>
+k logs kafka-0 | grep -iE "GroupCoordinator|rebalance"      <span class="c"># consumer group activity</span>
+k logs kafka-0 | grep -iE "LeaderElection|Elected|controller" <span class="c"># leadership changes</span>
+k get events --sort-by=.lastTimestamp | tail -20             <span class="c"># Kubernetes view</span></code></pre>
+<p class="reveal">Turn up logging on a running broker without a restart (example: replica fetching, broker 0):</p>
+<pre class="reveal"><code>kafka-configs.sh --bootstrap-server $BS --entity-type broker-loggers --entity-name 0 --alter \
+  --add-config kafka.server.ReplicaFetcherThread=DEBUG
+kafka-configs.sh --bootstrap-server $BS --entity-type broker-loggers --entity-name 0 --alter \
+  --add-config kafka.server.ReplicaFetcherThread=INFO       <span class="c"># turn it back down</span></code></pre>
+
+<h2 class="reveal">7. Backup, disaster recovery and upgrades</h2>
+<div class="grid g2 reveal">
+<div class="card c-red"><h4>Replication is not backup</h4><p>Three copies protect against a broker or disk failure. They do <b>not</b> protect against someone deleting a topic, a bad producer writing garbage, or losing the whole cluster or site. For that, mirror to a second cluster (MirrorMaker 2) or snapshot the Ceph volumes, and keep important source data elsewhere too.</p></div>
+<div class="card c-amber"><h4>Upgrades</h4><p>Upgrade one broker at a time using the safe rolling procedure, read the release notes for protocol or metadata version steps, and test on a copy first. Never upgrade and change configuration in the same step.</p></div>
+</div>
+
+<h2 class="reveal">8. What this lab does not have (and a real cluster should)</h2>
+<div class="tablewrap reveal"><table>
+<tr><th>Gap</th><th>Why it matters</th></tr>
+<tr><td>Authentication and TLS (SASL, mTLS)</td><td>Today anyone who can reach port 9092 can read and write everything.</td></tr>
+<tr><td>ACLs</td><td>Per-user, per-topic permissions.</td></tr>
+<tr><td>Metrics and alerting</td><td>Alert on offline/under-replicated partitions, lag, disk %, controller count.</td></tr>
+<tr><td>Rack awareness (<code>broker.rack</code>)</td><td>Spread replicas across availability zones, not just nodes.</td></tr>
+<tr><td>Quotas</td><td>Stop one noisy client from using all bandwidth.</td></tr>
+<tr><td>Dedicated controllers, larger disks, more brokers</td><td>Isolation and capacity.</td></tr>
+<tr><td>External listener</td><td>Access from outside the cluster.</td></tr>
+<tr><td>An operator (such as Strimzi)</td><td>Automates rolling updates, certificates and scaling, doing the safe procedures for you.</td></tr>
+</table></div>
+
+<h2 class="reveal">Check yourself</h2>
+<div id="q9"></div>
+
+</main>
+<script src="../assets/js/app.js"></script>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+
+  /* command builder */
+  var FIELDS = { create: ['topic', 'parts', 'rf', 'ret', 'minisr'], describe: ['topic'], partitions: ['topic', 'parts'], retention: ['topic', 'ret'], compact: ['topic'], delete: ['topic'], offsets: ['topic'], group: ['group'], reset: ['group', 'topic', 'reset'], urp: [], tail: ['topic'] };
+  var NOTE = { create: 'Auto-create is off, so topics must be created on purpose. RF cannot exceed 3 brokers.', partitions: 'Partitions can only increase. Keyed data may map to new partitions.', delete: 'Irreversible. Data is removed from all brokers.', reset: 'The group must have no running consumers. Add --execute instead of --dry-run to apply.', compact: 'Keeps the latest record per key forever. Records need keys.', retention: 'Applies immediately; deletion happens at the next retention check (every 60 s here).', urp: 'Empty output is healthy.', tail: 'Reads the last 10 records per partition and exits.', offsets: '-2 is the earliest offset, -1 the latest.', group: 'Check LAG and whether CONSUMER-ID is "-" (unassigned).', describe: 'Healthy: Isr equals Replicas on every line.' };
+  function build() {
+    var op = $('op').value, t = $('topic').value.trim() || 'my-topic', g = $('group').value.trim() || 'my-group', BS = '--bootstrap-server $BS', c = '';
+    document.querySelectorAll('.bld label[data-f]').forEach(function (l) { l.hidden = FIELDS[op].indexOf(l.getAttribute('data-f')) < 0; });
+    if (op === 'create') c = 'kafka-topics.sh ' + BS + ' --create --topic ' + t + ' --partitions ' + $('parts').value + ' --replication-factor ' + $('rf').value + ' \\\n  --config retention.ms=' + $('ret').value + ' --config min.insync.replicas=' + $('minisr').value;
+    else if (op === 'describe') c = 'kafka-topics.sh ' + BS + ' --describe --topic ' + t;
+    else if (op === 'partitions') c = 'kafka-topics.sh ' + BS + ' --alter --topic ' + t + ' --partitions ' + $('parts').value;
+    else if (op === 'retention') c = 'kafka-configs.sh ' + BS + ' --entity-type topics --entity-name ' + t + ' --alter --add-config retention.ms=' + $('ret').value;
+    else if (op === 'compact') c = 'kafka-configs.sh ' + BS + ' --entity-type topics --entity-name ' + t + ' --alter --add-config cleanup.policy=compact';
+    else if (op === 'delete') c = 'kafka-topics.sh ' + BS + ' --delete --topic ' + t;
+    else if (op === 'offsets') c = 'kafka-get-offsets.sh ' + BS + ' --topic ' + t + ' --time -2     # earliest\nkafka-get-offsets.sh ' + BS + ' --topic ' + t + ' --time -1     # latest';
+    else if (op === 'group') c = 'kafka-consumer-groups.sh ' + BS + ' --describe --group ' + g;
+    else if (op === 'reset') c = 'kafka-consumer-groups.sh ' + BS + ' --group ' + g + ' --topic ' + t + ' \\\n  --reset-offsets ' + $('reset').value + ' --dry-run';
+    else if (op === 'urp') c = 'kafka-topics.sh ' + BS + ' --describe --under-replicated-partitions\nkafka-topics.sh ' + BS + ' --describe --under-min-isr-partitions\nkafka-topics.sh ' + BS + ' --describe --unavailable-partitions';
+    else if (op === 'tail') c = 'kafka-console-consumer.sh ' + BS + ' --topic ' + t + ' --from-beginning --max-messages 10 --timeout-ms 5000 \\\n  --property print.key=true --property print.partition=true --property print.offset=true';
+    var code = document.querySelector('#cmd code'); code.textContent = c; $('cmd').setAttribute('data-copy', c);
+    $('cmdnote').textContent = NOTE[op] || '';
+    $('cmdnote').className = 'status ' + (op === 'delete' ? 'bad' : (op === 'partitions' || op === 'reset' ? 'warn' : ''));
+  }
+  document.querySelectorAll('.bld select, .bld input').forEach(function (e) { e.addEventListener('input', build); e.addEventListener('change', build); }); build();
+
+  /* troubleshooter */
+  var K = function (c) { return 'kubectl --context devk8s-admin@devk8s -n kafka ' + c; };
+  var T = [
+    { id: 'notenough', s: 'Producer error: NOT_ENOUGH_REPLICAS', m: 'The partition has fewer in-sync replicas than <code>min.insync.replicas</code> and the producer uses <code>acks=all</code>, so Kafka is <b>refusing the write to protect your data</b>. Nothing was lost.',
+      c: [['Which brokers are down?', K('get pods -o wide')], ['Which partitions are affected?', 'kafka-topics.sh --bootstrap-server $BS --describe --under-min-isr-partitions'], ['Why is a broker down or slow?', K('describe pod kafka-N | tail -25') + '\n' + K('logs kafka-N --tail=60')]],
+      f: ['Bring the missing brokers back. When the ISR is large enough again, writes resume by themselves.', 'Do <b>not</b> lower <code>min.insync.replicas</code> to "fix" it unless you knowingly accept that acknowledged data may sit on one disk.', 'If a broker is up but slow (disk or network), it drops out of the ISR after <code>replica.lag.time.max.ms</code> (30 s).'] },
+    { id: 'timeout', s: 'Producer or consumer hangs, then TimeoutException', m: 'The client cannot get metadata or reach a leader. Common causes, most likely first: the topic does not exist (auto-create is off), the partition has no leader, the cluster lost its controller quorum, or the client cannot resolve or reach the brokers.',
+      c: [['Does the topic exist?', 'kafka-topics.sh --bootstrap-server $BS --list | grep -x orders'], ['Any partition without a leader?', 'kafka-topics.sh --bootstrap-server $BS --describe --unavailable-partitions'], ['Is there a controller quorum?', 'kafka-metadata-quorum.sh --bootstrap-server $BS describe --status'], ['Are brokers running?', K('get pods')], ['Can this client resolve a broker name?', 'getent hosts kafka-0.kafka-headless.kafka.svc.cluster.local']],
+      f: ['Warning <code>UNKNOWN_TOPIC_OR_PARTITION</code> repeating: create the topic or fix the spelling.', 'No quorum: restore a broker so 2 of 3 controllers are alive.', 'Name does not resolve: you are outside the cluster, see "Cannot connect from outside".'] },
+    { id: 'lag', s: 'Consumer lag keeps growing', m: 'Records arrive faster than the group processes them, or consumers are not actually working: too few consumers, a slow handler, a rebalance loop, or crashed instances.',
+      c: [['Where is the lag, and is every partition assigned?', 'kafka-consumer-groups.sh --bootstrap-server $BS --describe --group <group>'], ['What state is the group in?', 'kafka-consumer-groups.sh --bootstrap-server $BS --describe --group <group> --state'], ['Who are the members?', 'kafka-consumer-groups.sh --bootstrap-server $BS --describe --group <group> --members --verbose'], ['Are the consumer pods healthy?', K('get pods') + '   # (the namespace of your app)\nkubectl logs deploy/<your-app> --tail=100']],
+      f: ['<code>CONSUMER-ID</code> shown as <code>-</code> means nobody owns that partition: consumers are down or in a rebalance.', 'Fewer consumers than partitions: add consumers (up to the partition count).', 'Already one consumer per partition: speed up the handler, batch writes, or add partitions (mind key ordering).', 'Lag on one partition only: a hot key, or a poison message that keeps failing.'] },
+    { id: 'nothing', s: 'Consumer receives nothing', m: 'Usually the consumer is connected but has nothing to read from where it is positioned.',
+      c: [['Is there data? (earliest vs latest offsets)', 'kafka-get-offsets.sh --bootstrap-server $BS --topic <topic> --time -2\nkafka-get-offsets.sh --bootstrap-server $BS --topic <topic> --time -1'], ['Where is the group positioned?', 'kafka-consumer-groups.sh --bootstrap-server $BS --describe --group <group>'], ['Can a fresh reader see data?', 'kafka-console-consumer.sh --bootstrap-server $BS --topic <topic> --from-beginning --max-messages 5 --timeout-ms 5000']],
+      f: ['New group with <code>auto.offset.reset=latest</code> only sees records produced <i>after</i> it starts. Use <code>earliest</code>, or reset offsets.', 'Earliest equals latest: retention already deleted everything, or nothing was ever produced.', 'Wrong topic name, wrong cluster, or wrong <code>group.id</code>.', 'Using <code>read_committed</code> with an open transaction: records after it are held back until it commits.'] },
+    { id: 'crash', s: 'Broker pod is in CrashLoopBackOff', m: 'The Kafka process starts and dies. The reason is almost always in the previous container\'s log.',
+      c: [['Read the last words', K('logs kafka-N --previous --tail=60')], ['Was it killed by Kubernetes?', K('describe pod kafka-N | grep -A6 "Last State"') + '   # Reason: OOMKilled / Error, Exit Code 137 = killed']],
+      f: ['<code>Found directory .../lost+found</code>: volume root contains lost+found. Mount with <code>subPath: kafka</code> (already done in this lab).', '<code>OOMKilled</code> / exit 137: raise the memory limit (heap 512 MB plus page cache and JVM overhead).', '<code>Invalid cluster.id</code>: the data directory belongs to a different cluster than <code>CLUSTER_ID</code>. Never change CLUSTER_ID after data exists.', '<code>No space left on device</code>: disk full, see the disk symptom.', '<code>Permission denied</code> on the data directory: check <code>fsGroup: 1000</code> in the pod spec.'] },
+    { id: 'pending', s: 'A broker pod stays Pending', m: 'Kubernetes cannot place the pod. With one-broker-per-node anti-affinity on 3 workers, <b>losing or cordoning a worker leaves nowhere to schedule it</b>.',
+      c: [['Why is it not scheduled?', K('describe pod kafka-N | sed -n "/Events:/,\\$p"')], ['Are all 3 workers Ready and schedulable?', 'kubectl get nodes'], ['Is its volume bound?', K('get pvc')]],
+      f: ['<code>didn\'t match pod anti-affinity rules</code>: a worker is NotReady or cordoned. Fix the node or <code>kubectl uncordon</code> it.', 'PVC <code>Pending</code>: check the Ceph cluster in the <code>rook-ceph</code> namespace.', 'Insufficient memory/cpu: free resources on the node or lower the requests.'] },
+    { id: 'urp', s: 'Under-replicated partitions (ISR smaller than Replicas)', m: 'Some replica is behind or missing. For a minute after a restart this is normal (catching up). If it persists, a broker is down, slow, or cut off from the leader.',
+      c: [['List them', 'kafka-topics.sh --bootstrap-server $BS --describe --under-replicated-partitions'], ['Which broker is missing from Isr?', 'compare "Replicas" and "Isr" on each line'], ['Is that broker alive?', K('get pods -o wide')], ['What does it say?', K('logs kafka-N --tail=80 | grep -iE "ERROR|WARN|fetch"')]],
+      f: ['Broker pod not Running: fix the pod (see CrashLoopBackOff or Pending).', 'Running but not catching up: check disk latency and CPU, and network between nodes.', 'Wait 1 to 2 minutes after planned restarts before concluding anything.'] },
+    { id: 'disk', s: 'Disk nearly full, or "No space left on device"', m: 'Retention is keeping more data than the volume can hold. A completely full disk crashes the broker.',
+      c: [['How full is each broker?', 'for i in 0 1 2; do ' + K('exec kafka-$i -- df -h /var/lib/kafka/data | tail -1') + '; done'], ['Which topics are largest?', 'kafka-log-dirs.sh --bootstrap-server $BS --describe --broker-list 0 2>/dev/null | tail -1 | tr "{" "\\n" | grep "\\"partition\\"" | sed "s/.*\\"partition\\":\\"\\([^\\"]*\\)\\",\\"size\\":\\([0-9]*\\).*/\\2 \\1/" | sort -n -r | head\n# output: size-in-bytes and partition name, biggest first (repeat with --broker-list 1, 2)']],
+      f: ['Lower <code>retention.ms</code> or <code>retention.bytes</code> on the biggest topics. Space frees at the next retention check.', 'Delete topics you no longer need.', 'Expand the PVCs (section 3). If the broker is already crashed, expand the volume <b>first</b> so it can start.', 'Longer term: capacity-plan with the calculator in module 6.'] },
+    { id: 'rebalance', s: 'Consumers constantly rebalance', m: 'Members keep leaving and re-joining the group. Each rebalance pauses processing.',
+      c: [['How often?', K('logs kafka-0 | grep -ic "rebalance"')], ['Why do members leave?', 'consumer application logs: "max.poll.interval.ms exceeded", "session timed out", "heartbeat failed"'], ['Are consumer pods restarting?', 'kubectl get pods   # look at RESTARTS and OOMKilled']],
+      f: ['Handler slower than <code>max.poll.interval.ms</code>: reduce <code>max.poll.records</code>, speed up work, or raise the interval.', 'Use <code>CooperativeStickyAssignor</code> so only affected partitions move.', 'Use static membership (<code>group.instance.id</code> = pod name) so restarts do not trigger rebalances.', 'Fix crashing or OOM-killed consumer pods and any autoscaler that scales up and down rapidly.'] },
+    { id: 'outside', s: 'Cannot connect from outside the cluster / UnknownHostException', m: 'Brokers advertise in-cluster DNS names such as <code>kafka-1.kafka-headless.kafka.svc.cluster.local</code>. Outside clients cannot resolve them, and <code>kubectl port-forward</code> only tunnels a single pod.',
+      c: [['What does the broker advertise?', 'kafka-configs.sh --bootstrap-server $BS --entity-type brokers --entity-name 0 --describe --all | grep advertised']],
+      f: ['Run the client inside the cluster (a pod).', 'To serve outside clients, add a second listener with an externally reachable advertised address (NodePort or LoadBalancer per broker). This is a deliberate extra configuration.'] },
+    { id: 'order', s: 'Messages arrive out of order', m: 'Order only exists within a partition. If related records can land in different partitions, or are processed in parallel, order is lost.',
+      c: [['Which partitions are the records in?', 'kafka-console-consumer.sh --bootstrap-server $BS --topic <topic> --from-beginning --max-messages 20 --property print.key=true --property print.partition=true --property print.offset=true']],
+      f: ['No key: set a key (the entity id) so related records share a partition.', 'Partition count changed after keyed data was written: keys moved. Plan partition counts up front.', 'Different client libraries hashing differently: use murmur2-compatible partitioners.', 'Retries without idempotence with several in-flight requests: set <code>enable.idempotence=true</code>.', 'Your consumer processes one partition with multiple threads: process each partition in order.'] },
+    { id: 'dups', s: 'Duplicate messages', m: 'Kafka\'s default behavior is at-least-once: after a crash or rebalance a record can be delivered again.',
+      c: [['Is the group rebalancing or crashing?', 'kafka-consumer-groups.sh --bootstrap-server $BS --describe --group <group> --state'], ['Do duplicates have the same partition and offset?', 'print.partition and print.offset on the consumer: same offset = redelivery; different offsets = produced twice']],
+      f: ['Make handlers idempotent (upsert by id, "insert if not exists").', 'Same offset twice: fix whatever causes the crash or rebalance.', 'Different offsets: the producer sent twice. Enable <code>enable.idempotence=true</code> and check your application for double sends.', 'For Kafka-to-Kafka pipelines consider transactions (exactly-once).'] }
+  ];
+  var sym = $('sym'), out = $('tsout');
+  function show(id) {
+    var x = T.filter(function (t) { return t.id === id; })[0];
+    sym.querySelectorAll('button').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-id') === id); });
+    var h = '<h3 style="margin:14px 0 4px">' + x.s + '</h3><h4>What it means</h4><p>' + x.m + '</p><h4>Check, in this order</h4><ol>';
+    x.c.forEach(function (c) { h += '<li>' + c[0] + '<pre><code>' + c[1].replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</code></pre></li>'; });
+    h += '</ol><h4>Fix</h4><ul>' + x.f.map(function (f) { return '<li>' + f + '</li>'; }).join('') + '</ul>';
+    out.innerHTML = h;
+    out.querySelectorAll('pre').forEach(function (pre) { var b = KT.h('button', { class: 'copy', text: 'Copy', onclick: function () { var t = pre.querySelector('code').textContent; if (navigator.clipboard) navigator.clipboard.writeText(t); b.textContent = 'Copied'; setTimeout(function () { b.textContent = 'Copy'; }, 1200); } }); pre.appendChild(b); });
+  }
+  T.forEach(function (t) { sym.appendChild(KT.h('button', { 'data-id': t.id, text: t.s, onclick: function () { show(t.id); } })); });
+  show('notenough');
+
+  KT.quiz($('q9'), 'm9', 'Quick check', [
+    { q: 'You are restarting brokers one by one. kafka-1 shows Ready in Kubernetes. What must you check before restarting kafka-0?', o: ['Nothing, Ready means healthy', 'That there are no under-replicated partitions (the broker is back in the ISR)', 'That the PVC is deleted', 'That consumers are stopped'], a: 1, why: 'The readiness probe only tests the port. The broker may still be catching up; restarting another now can drop below min.insync.replicas.' },
+    { q: 'A producer gets NOT_ENOUGH_REPLICAS. What is the right first move?', o: ['Set min.insync.replicas=1', 'Find which brokers are down or slow and restore them', 'Delete the topic', 'Restart the producer'], a: 1, why: 'The refusal is protecting data. Restore the replicas; lowering the minimum trades safety for availability.' },
+    { q: 'Consumer lag is growing and CONSUMER-ID is "-" for two partitions. What does it mean?', o: ['The partitions are empty', 'Nobody is currently assigned those partitions', 'Retention deleted them', 'The topic is compacted'], a: 1, why: 'Unassigned partitions mean consumers are down or a rebalance is stuck, so nobody is reading them.' },
+    { q: 'Which is NOT a backup of your topic data?', o: ['A mirror cluster via MirrorMaker 2', 'Snapshots of the volumes', 'Replication factor 3', 'Source systems that can replay events'], a: 2, why: 'Replication protects against hardware failure, not against deletion or bad data. It is not a backup.' },
+    { q: 'A broker is in CrashLoopBackOff with "No space left on device". What do you do first?', o: ['Restart it repeatedly', 'Expand the volume (or free space) so it can start, then reduce retention', 'Delete the PVC', 'Scale to 5 brokers'], a: 1, why: 'The broker cannot start with a full disk. Make room first, then fix the root cause (retention/capacity).' }
+  ]);
+})();
+</script>
+</body>
+</html>

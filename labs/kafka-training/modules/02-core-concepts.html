@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2. Core building blocks | Kafka Training</title>
+<script src="../assets/js/theme.js"></script>
+<link rel="stylesheet" href="../assets/css/style.css">
+<style>
+  .prow { display: flex; align-items: center; gap: 10px; margin: 6px 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+  .prow .pl { flex: none; width: 92px; font-weight: 600; font-size: .85rem; color: var(--t); }
+  .prow .cells { margin: 0; flex: 1; min-height: 24px; }
+  .cell { cursor: pointer; } .cell.sel { outline: 2px solid var(--accent); outline-offset: 1px; } .cell.same { background: var(--amber-f); border-color: var(--amber-s); color: var(--amber-t); }
+  .fields { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 12px; }
+  .fields button { font: inherit; font-size: .88rem; padding: 8px 14px; border-radius: 10px; border: 1.5px solid var(--s); background: var(--f); color: var(--t); cursor: pointer; font-weight: 600; transition: transform .15s; }
+  .fields button.on { transform: translateY(-3px); box-shadow: 0 5px 14px color-mix(in srgb, var(--s) 30%, transparent); outline: 2px solid var(--s); }
+  .recbox { border: 1.5px solid var(--border); border-radius: 12px; padding: 14px 16px; background: var(--surface2); font: .85rem/1.9 var(--mono); }
+</style>
+</head>
+<body data-root=".." data-module="2">
+<aside class="side" id="side"></aside>
+<main class="main" id="main">
+
+<div class="kicker">Module 2 of 10 &middot; Concepts</div>
+<h1>Core building blocks</h1>
+<p class="lead">Six words explain almost all of Kafka: record, topic, partition, offset, broker, cluster. Learn how they nest inside each other and the rest of the course becomes easy.</p>
+<div class="meta"><span class="pill">25 minutes</span><span class="pill">2 simulators</span><span class="pill">uses real Kafka hashing</span></div>
+<div class="goals"><h4>By the end you can</h4><ul>
+  <li>Draw how cluster, broker, topic, partition and record fit together</li>
+  <li>Say what a record contains and what an offset is</li>
+  <li>Predict which partition a keyed message lands in, and why order is only guaranteed inside one partition</li></ul></div>
+
+<h2 class="reveal">1. The big picture</h2>
+<p class="reveal">Read this picture from the outside in. A <b>cluster</b> is a group of <b>brokers</b> (servers). Brokers hold <b>partitions</b>. Partitions belong to <b>topics</b> and are made of <b>records</b>. Purple chips are the "leader" copy of a partition, teal chips are backup copies (module 4 explains them).</p>
+<figure class="fig reveal">
+<svg viewBox="0 0 680 250" role="img" aria-label="A Kafka cluster with three brokers holding partitions of two topics">
+  <rect class="cont" x="10" y="8" width="660" height="234" rx="16"/><text class="th" x="26" y="30">Kafka cluster</text>
+  <g class="nd c-gray"><rect x="30" y="46" width="190" height="180" rx="12"/><text class="th" x="46" y="68">Broker 0</text></g>
+  <g class="nd c-gray"><rect x="245" y="46" width="190" height="180" rx="12"/><text class="th" x="261" y="68">Broker 1</text></g>
+  <g class="nd c-gray"><rect x="460" y="46" width="190" height="180" rx="12"/><text class="th" x="476" y="68">Broker 2</text></g>
+  <g class="nd c-purple"><rect x="46" y="82" width="158" height="34" rx="8"/><text class="t" x="125" y="99" text-anchor="middle" dominant-baseline="central">orders-0 &middot; leader</text></g>
+  <g class="nd c-teal"><rect x="46" y="124" width="158" height="34" rx="8"/><text class="t" x="125" y="141" text-anchor="middle" dominant-baseline="central">orders-1 &middot; copy</text></g>
+  <g class="nd c-purple"><rect x="46" y="166" width="158" height="34" rx="8"/><text class="t" x="125" y="183" text-anchor="middle" dominant-baseline="central">payments-0 &middot; leader</text></g>
+  <g class="nd c-purple"><rect x="261" y="82" width="158" height="34" rx="8"/><text class="t" x="340" y="99" text-anchor="middle" dominant-baseline="central">orders-1 &middot; leader</text></g>
+  <g class="nd c-teal"><rect x="261" y="124" width="158" height="34" rx="8"/><text class="t" x="340" y="141" text-anchor="middle" dominant-baseline="central">orders-2 &middot; copy</text></g>
+  <g class="nd c-teal"><rect x="261" y="166" width="158" height="34" rx="8"/><text class="t" x="340" y="183" text-anchor="middle" dominant-baseline="central">payments-0 &middot; copy</text></g>
+  <g class="nd c-purple"><rect x="476" y="82" width="158" height="34" rx="8"/><text class="t" x="555" y="99" text-anchor="middle" dominant-baseline="central">orders-2 &middot; leader</text></g>
+  <g class="nd c-teal"><rect x="476" y="124" width="158" height="34" rx="8"/><text class="t" x="555" y="141" text-anchor="middle" dominant-baseline="central">orders-0 &middot; copy</text></g>
+  <g class="nd c-teal"><rect x="476" y="166" width="158" height="34" rx="8"/><text class="t" x="555" y="183" text-anchor="middle" dominant-baseline="central">payments-0 &middot; copy</text></g>
+</svg>
+<figcaption>Two topics: <code>orders</code> (3 partitions, 2 copies each) and <code>payments</code> (1 partition, 3 copies). Notice the leaders are spread over different brokers so no single server does all the work.</figcaption>
+</figure>
+
+<h2 class="reveal">2. Record (message): the unit of data</h2>
+<p class="reveal">Everything in Kafka is a <b>record</b>. Click each field to see what it is for.</p>
+<div class="sim reveal">
+  <div class="sim-h">Explorer: anatomy of a record</div>
+  <div class="sim-b">
+    <div class="fields" id="fields"></div>
+    <div class="recbox">
+      <div>offset&nbsp;&nbsp;&nbsp;&nbsp;: <span style="color:var(--blue-s)">4</span></div>
+      <div>partition&nbsp;: <span style="color:var(--purple-s)">2</span></div>
+      <div>timestamp&nbsp;: <span style="color:var(--amber-s)">2026-11-22 10:42:07</span></div>
+      <div>key&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: <span style="color:var(--teal-s)">"cust-A"</span></div>
+      <div>value&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;: <span style="color:var(--coral-s)">{"orderId":1001,"item":"keyboard"}</span></div>
+      <div>headers&nbsp;&nbsp;&nbsp;: <span style="color:var(--pink-s)">trace-id=ab12, content-type=json</span></div>
+    </div>
+    <div class="status" id="fielddesc">Pick a field above.</div>
+  </div>
+</div>
+
+<h2 class="reveal">3. Topic: a named stream</h2>
+<p class="reveal">A <b>topic</b> is a category of records with a name, such as <code>orders</code>, <code>payments</code> or <code>user-clicks</code>. Producers write to a topic; consumers subscribe to a topic. A topic is not one file: it is split into partitions.</p>
+<div class="callout analogy reveal"><strong class="ttl">Analogy</strong>A topic is a <b>TV channel</b>. Producers broadcast on it. Viewers (consumers) tune in whenever they like, and each viewer has their own recording that they can rewind.</div>
+<p class="reveal small muted">Naming tip: lowercase with dashes or dots, a clear business meaning (<code>orders.placed</code>). Do not mix dots and underscores in names, because Kafka metrics treat them alike.</p>
+
+<h2 class="reveal">4. Partition: where the data really lives</h2>
+<p class="reveal">One topic is divided into <b>partitions</b>. A partition is an <b>append-only, ordered log</b>: new records are added at the end, and nothing is ever edited in the middle. Partitions exist for two reasons:</p>
+<ul class="reveal"><li><b>Scale:</b> each partition can live on a different broker and be read by a different consumer, so work is shared.</li><li><b>Ordering:</b> inside one partition, order is guaranteed. Across partitions, it is not.</li></ul>
+<p class="reveal">How does a producer pick a partition? With a <b>key</b>: Kafka hashes the key and takes the remainder when dividing by the number of partitions. The same key always gives the same partition (as long as the partition count does not change). Try it below. <b>This simulator uses Kafka's real hashing</b>, and gives the same answers as your cluster.</p>
+
+<div class="sim reveal">
+  <div class="sim-h">Simulator: key to partition to offset</div>
+  <div class="sim-b">
+    <div class="sim-ctl">
+      <label>Partitions <input type="range" id="np" min="1" max="6" value="3"> <span class="val" id="npv">3</span></label>
+      <label>Key <input type="text" id="key" value="cust-A" size="10"></label>
+      <button class="btn primary" id="send">Send message</button>
+      <button class="btn" id="nokey">Send without key</button>
+      <button class="btn" id="burst">Send 12 random</button>
+      <button class="btn" id="clear">Clear</button>
+    </div>
+    <div class="stage c-purple" id="parts"></div>
+    <div class="status" id="detail">Click any cell to inspect that record. Cells with the same key turn amber.</div>
+    <div class="simlog" id="slog"></div>
+  </div>
+</div>
+<div class="callout tip reveal"><strong class="ttl">Things to try</strong><ol>
+<li>Send <code>cust-A</code> five times. All five land in the same partition with offsets 0, 1, 2, 3, 4.</li>
+<li>Send <code>cust-B</code>, <code>cust-C</code>, <code>cust-D</code>. They spread out. That is load sharing.</li>
+<li>Click <b>Send without key</b> several times. With no key, records are spread evenly (round-robin here; real clients use a "sticky" variant for efficiency).</li>
+<li>Change partitions from 3 to 4 and resend <code>cust-A</code>. It may land somewhere new. <b>That is why you should not change partition counts casually on topics that rely on key ordering.</b></li></ol></div>
+
+<div class="callout real reveal"><strong class="ttl">Real output from your cluster</strong>
+A topic with 3 partitions, keys sent with <code>parse.key=true</code>, and read back with <code>print.partition=true</code>:
+<pre data-nocopy style="margin-bottom:0"><code>Partition:0  cust-B  2        Partition:2  cust-A  1
+Partition:0  alice   5        Partition:2  cust-C  3
+Partition:0  bob     6        Partition:1  cust-D  4
+Partition:1  order-100 11</code></pre>
+The simulator above produces exactly this mapping for these keys.</div>
+
+<h2 class="reveal">5. Offset: the position in a partition</h2>
+<p class="reveal">Each record in a partition gets a number called its <b>offset</b>: 0, 1, 2, 3 and so on. Offsets only go up, are never reused, and are unique <b>only within one partition</b>. So the full address of a record is:</p>
+<p class="reveal" style="text-align:center"><span class="tag c-purple">topic</span> + <span class="tag c-teal">partition</span> + <span class="tag c-coral">offset</span> &nbsp;=&nbsp; one exact record &nbsp; (e.g. <code>orders / 2 / 4</code>)</p>
+<p class="reveal">Consumers remember "I have read up to offset N" for each partition. That bookmark is how they resume after a restart, and how they replay by moving it backwards. Module 5.</p>
+
+<h2 class="reveal">6. Ordering: the rule everyone trips over</h2>
+<div class="tablewrap reveal"><table>
+<tr><th>Scope</th><th>Is order guaranteed?</th><th>So what?</th></tr>
+<tr><td>Inside one partition</td><td><span class="tag c-green">Yes, always</span></td><td>Records come out in the order they went in.</td></tr>
+<tr><td>Across partitions of a topic</td><td><span class="tag c-red">No</span></td><td>A consumer reading 3 partitions can interleave them in any order.</td></tr>
+<tr><td>Same key</td><td><span class="tag c-green">Yes</span> (same partition)</td><td>Use the entity id as key: all events for one customer, device or order stay in sequence.</td></tr>
+</table></div>
+<div class="callout note reveal"><strong class="ttl">Design rule</strong>Decide what must be ordered (usually "per customer" or "per order"), make <b>that</b> the key, and let everything else run in parallel across partitions.</div>
+
+<h2 class="reveal">7. Broker, cluster, controller</h2>
+<div class="grid g3 reveal">
+<div class="card c-gray"><h4>Broker</h4><p>One Kafka server process. It stores partitions on disk and serves producers and consumers. Your lab has 3: <code>kafka-0</code>, <code>kafka-1</code>, <code>kafka-2</code>.</p></div>
+<div class="card c-gray"><h4>Cluster</h4><p>A set of brokers working together. Clients connect to any broker, which tells them where each partition's leader is. That first address is the <b>bootstrap server</b>.</p></div>
+<div class="card c-gray"><h4>Controller</h4><p>The brokers elect a few nodes (the KRaft quorum) that keep the cluster's "who is leader of what" records. In your lab all 3 brokers also act as controllers. Module 6.</p></div>
+</div>
+
+<h2 class="reveal">8. Retention, in one paragraph</h2>
+<p class="reveal">Because consumers do not delete records, Kafka needs another way to free disk. It removes old data by <b>time</b> (default 7 days) or <b>size</b>, whichever limit is hit first. Retention is not "after someone read it", it is "after it is old". You will tune and watch this in modules 6 and 9.</p>
+
+<h2 class="reveal">Check yourself</h2>
+<div id="q2"></div>
+
+</main>
+<script src="../assets/js/app.js"></script>
+<script>
+(function () {
+  /* record anatomy */
+  var F = [
+    ['offset', 'c-blue', 'Position of the record inside its partition. Assigned by the broker when the record is appended. Starts at 0, only increases, never reused even after old data is deleted.'],
+    ['partition', 'c-purple', 'Which log the record lives in. Chosen by the producer\'s partitioner: hash of the key, or round-robin when there is no key.'],
+    ['timestamp', 'c-amber', 'When the event happened (set by the producer, CreateTime) or when the broker stored it (LogAppendTime). Used by retention and "seek to time" operations.'],
+    ['key', 'c-teal', 'Optional. Decides the partition and therefore ordering. Typically an entity id such as customer, device or order id. Can be null.'],
+    ['value', 'c-coral', 'The payload. Kafka sees only bytes; you choose JSON, Avro or Protobuf. Default maximum size is about 1 MB per record, so keep records small.'],
+    ['headers', 'c-pink', 'Optional metadata (trace id, content type, source system) that travels with the record without being part of the value.']
+  ];
+  var fb = document.getElementById('fields'), fd = document.getElementById('fielddesc');
+  F.forEach(function (f) {
+    var b = KT.h('button', { class: f[1], text: f[0], onclick: function () {
+      fb.querySelectorAll('button').forEach(function (x) { x.classList.remove('on'); }); b.classList.add('on'); fd.innerHTML = '<b>' + f[0] + ':</b> ' + f[2];
+    } }); fb.appendChild(b);
+  });
+  fb.children[3].click();
+
+  /* log explorer */
+  var np = 3, parts = [], rr = 0, n = 0, sel = null, ptr = document.getElementById('parts'), logb = document.getElementById('slog'), det = document.getElementById('detail');
+  var pool = ['cust-A', 'cust-B', 'cust-C', 'cust-D', 'alice', 'bob', 'order-100'];
+  function init() { parts = []; for (var i = 0; i < np; i++) parts.push([]); rr = 0; n = 0; sel = null; ptr.innerHTML = ''; logb.innerHTML = '';
+    for (var p = 0; p < np; p++) ptr.appendChild(KT.h('div', { class: 'prow' }, [KT.h('div', { class: 'pl', text: 'Partition ' + p }), KT.h('div', { class: 'cells', id: 'cells' + p })]));
+    det.textContent = 'Click any cell to inspect that record. Cells with the same key turn amber.'; det.className = 'status'; }
+  function mark() { document.querySelectorAll('.cell').forEach(function (c) { c.classList.toggle('same', sel !== null && c.getAttribute('data-k') === sel && c.getAttribute('data-k') !== ''); }); }
+  function send(key) {
+    var p, how;
+    if (key !== null && key !== '') { var hv = KT.murmur2(new TextEncoder().encode(key)) & 0x7fffffff; p = hv % np; how = 'key "' + key + '": hash ' + hv + ' % ' + np + ' = partition ' + p; }
+    else { p = rr++ % np; how = 'no key: round-robin to partition ' + p; key = ''; }
+    n++; var rec = { key: key, value: 'order-' + n, ts: new Date() }; parts[p].push(rec); var off = parts[p].length - 1;
+    var c = KT.h('div', { class: 'cell new', text: off, 'data-k': key, title: 'offset ' + off, onclick: function () {
+      sel = key; document.querySelectorAll('.cell').forEach(function (x) { x.classList.remove('sel'); }); c.classList.add('sel'); mark();
+      det.className = 'status ok'; det.innerHTML = '<b>orders / partition ' + p + ' / offset ' + off + '</b> &middot; key: ' + (key || '<i>null</i>') + ' &middot; value: ' + rec.value + ' &middot; time: ' + rec.ts.toLocaleTimeString();
+    } });
+    document.getElementById('cells' + p).appendChild(c); mark();
+    KT.log(logb, how + ' (offset ' + off + ')', 'info');
+  }
+  document.getElementById('send').onclick = function () { send(document.getElementById('key').value.trim()); };
+  document.getElementById('nokey').onclick = function () { send(null); };
+  document.getElementById('burst').onclick = function () { var i = 0, t = setInterval(function () { send(pool[Math.floor(Math.random() * pool.length)]); if (++i >= 12) clearInterval(t); }, 140); };
+  document.getElementById('clear').onclick = init;
+  document.getElementById('np').oninput = function () { np = +this.value; document.getElementById('npv').textContent = np; init(); };
+  init();
+
+  KT.quiz(document.getElementById('q2'), 'm2', 'Quick check', [
+    { q: 'Which statement about offsets is correct?', o: ['Offsets are unique across the whole topic', 'Offsets restart at 0 inside every partition', 'Offsets are reused after old data is deleted', 'A consumer chooses the offset of a new record'], a: 1, why: 'Each partition numbers its own records from 0. The broker assigns offsets; they never repeat.' },
+    { q: 'You send three events with the key "cust-A". Where do they go?', o: ['Three different partitions', 'The same partition, in order', 'The same partition, in random order', 'Any partition, but in order'], a: 1, why: 'Same key, same hash, same partition. Inside a partition, order is preserved.' },
+    { q: 'You need all events of one order processed in sequence, but different orders in parallel. What is the best key?', o: ['No key', 'A constant like "orders"', 'The order id', 'The current time'], a: 2, why: 'Key by the entity whose order matters. A constant key would put everything in one partition and remove parallelism.' },
+    { q: 'What does a broker do?', o: ['Only coordinates elections', 'Stores partitions on disk and serves producers and consumers', 'Transforms messages', 'Only stores consumer offsets'], a: 1, why: 'A broker is the Kafka server process that holds partition data and handles client requests.' },
+    { q: 'Why is changing the partition count of a keyed topic risky?', o: ['Kafka deletes data', 'Existing keys may map to a different partition, breaking per-key ordering', 'Consumers stop working permanently', 'Replication factor resets'], a: 1, why: 'hash(key) % partitions changes when the partition count changes, so a key can move to a new partition.' }
+  ]);
+})();
+</script>
+</body>
+</html>

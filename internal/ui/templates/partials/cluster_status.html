@@ -66,6 +66,22 @@
         <i class="fa fa-arrow-circle-o-up mr-1.5"></i>Upgrade cluster
       </button>
 
+      <button type="button"
+              hx-get="/clusters/{{.ClusterName}}/resize"
+              hx-target="#cluster-upgrade-panel" hx-swap="innerHTML"
+              data-loading-text="Reading sizes..."
+              class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800">
+        <i class="fa fa-expand mr-1.5"></i>Resize nodes
+      </button>
+
+      <button type="button"
+              hx-get="/clusters/{{.ClusterName}}/worker-disk"
+              hx-target="#cluster-upgrade-panel" hx-swap="innerHTML"
+              data-loading-text="Reading workers..."
+              class="rounded-lg border border-slate-700 px-3 py-1.5 text-sm text-slate-200 hover:bg-slate-800">
+        <i class="fa fa-hdd mr-1.5"></i>Worker data disk
+      </button>
+
       <form hx-post="/clusters/{{.ClusterName}}/delete" hx-target="#cluster-status" hx-swap="outerHTML"
             hx-confirm="Type-to-confirm isn't available in this dialog — this will permanently delete &quot;{{.ClusterName}}&quot; and every VM it owns on Proxmox. Continue?">
         <input type="hidden" name="csrf" value="{{$.CSRF}}">

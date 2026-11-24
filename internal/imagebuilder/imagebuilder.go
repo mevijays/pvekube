@@ -543,6 +543,18 @@ const BuildTimeout = 90 * time.Minute
 // addresses.
 const buildVMMemoryMiB = 4096
 
+// templateCPUType is the Proxmox CPU model baked into every template, and so
+// into every cluster node: CAPMOX (v0.9) has no CPU-type field and clones the
+// template's setting as-is. image-builder's Proxmox template leaves cpu_type
+// empty, which Packer's Proxmox builder turns into "kvm64" — a baseline
+// without SSE4.2/POPCNT/AVX. Workloads built for newer baselines die on it at
+// startup (seen live: quay.io/ceph/ceph:v20 needs x86-64-v2, and
+// quay.io/cephcsi/cephcsi:v3.18 needs x86-64-v3 — "Fatal glibc error: CPU does
+// not support x86-64-v3"). x86-64-v3 (AVX2) still allows live migration
+// between different host CPUs, unlike "host"; every Proxmox node must support
+// AVX2.
+const templateCPUType = "x86-64-v3"
+
 // BuildSpec runs the real build. vmid is pre-allocated by the caller via
 // the Proxmox client (rather than left to Packer's default of "next free
 // ID at boot time") so PVEKube knows deterministically which VM/template
@@ -757,6 +769,9 @@ func packerFlagsEnv(env ConnEnv, vmid int, kv KubernetesVersion) []string {
 	// This is the build VM only — it is discarded when the template is
 	// converted, and has no bearing on the memory a cluster node gets.
 	flags += fmt.Sprintf(" --var memory=%d", buildVMMemoryMiB)
+	// Unlike memory, the CPU type outlives the build: it stays on the template
+	// and every node cloned from it. See templateCPUType.
+	flags += " --var cpu_type=" + templateCPUType
 	// Empty unless an explicit version was requested, so a default build
 	// still runs on image-builder's own pinned versions exactly as before.
 	flags += kv.packerVars()

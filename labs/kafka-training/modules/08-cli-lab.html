@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>8. Hands-on CLI lab | Kafka Training</title>
+<script src="../assets/js/theme.js"></script>
+<link rel="stylesheet" href="../assets/css/style.css">
+<style>
+  .lab { border: 1px solid var(--border); border-radius: 14px; background: var(--surface); padding: 6px 22px 10px; margin: 0 0 26px; box-shadow: var(--shadow); }
+  .lab h2 { margin: 18px 0 6px; font-size: 1.25rem; display: flex; gap: 12px; align-items: center; }
+  .lab h2 .n { flex: none; width: 34px; height: 34px; border-radius: 50%; background: var(--accent); color: var(--bg); display: grid; place-items: center; font-size: .95rem; }
+  .goal { color: var(--muted); margin: 0 0 8px; }
+  .where { display: inline-block; font-size: .72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; padding: 2px 8px; border-radius: 6px; background: var(--blue-f); color: var(--blue-t); border: 1px solid var(--blue-s); margin-right: 6px; }
+  .where.mac { background: var(--amber-f); color: var(--amber-t); border-color: var(--amber-s); }
+  .lab pre { margin: .6em 0 1em; } .out { background: #14141c !important; border-left: 3px solid #7fdbca; }
+  .prog2 { position: sticky; top: 0; z-index: 5; background: var(--bg); padding: 10px 0; border-bottom: 1px solid var(--border); margin-bottom: 20px; font-size: .88rem; }
+</style>
+</head>
+<body data-root=".." data-module="8">
+<aside class="side" id="side"></aside>
+<main class="main" id="main">
+
+<div class="kicker">Module 8 of 10 &middot; On your Kubernetes</div>
+<h1>Hands-on CLI lab</h1>
+<p class="lead">Twelve short labs against your real cluster. Each one has a goal, commands you can copy, the real output we recorded, and what to notice. Do them in order: later labs reuse earlier topics.</p>
+<div class="meta"><span class="pill">45 to 60 minutes</span><span class="pill">12 labs</span><span class="pill">needs kubectl access to devk8s</span></div>
+
+<div class="callout warn reveal"><strong class="ttl">Safe to run?</strong>Yes, with one note. Everything here is on the dedicated <code>kafka</code> namespace and uses throwaway topics. Labs 8 and 9 deliberately kill broker pods; the cluster recovers by itself. Do not run these against a Kafka that carries real data.</div>
+
+<div class="callout note reveal"><strong class="ttl">Two kinds of terminal</strong>
+<span class="where">in the pod</span> means: run inside a shell in the <code>kafka-client</code> pod (set up in Lab 0). <span class="where mac">on your Mac</span> means: run in a normal terminal. Open <b>two terminal windows</b>: one in the pod, one on your Mac.</div>
+
+<div class="prog2" id="labprog"></div>
+
+<section class="lab">
+<h2><span class="n">0</span>Get a shell and check the cluster is healthy</h2>
+<p class="goal">Goal: reach the Kafka tools, and read a healthy cluster so you know what "normal" looks like.</p>
+<p><span class="where mac">on your Mac</span></p>
+<pre><code><span class="c"># a short alias so every later command is easy to type</span>
+alias k='kubectl --context devk8s-admin@devk8s -n kafka'
+
+k get pods -o wide
+k exec -it kafka-client -- bash</code></pre>
+<p><span class="where">in the pod</span></p>
+<pre><code>export PATH=$PATH:/opt/kafka/bin
+echo $BS
+kafka-broker-api-versions.sh --bootstrap-server $BS | grep -E '^kafka'
+kafka-metadata-quorum.sh --bootstrap-server $BS describe --status | head -8</code></pre>
+<pre class="out" data-nocopy><code>kafka-1.kafka-headless.kafka.svc.cluster.local:9092 (id: 1 rack: null isFenced: false)
+kafka-2.kafka-headless.kafka.svc.cluster.local:9092 (id: 2 rack: null isFenced: false)
+kafka-0.kafka-headless.kafka.svc.cluster.local:9092 (id: 0 rack: null isFenced: false)
+
+ClusterId:              MkU3OEVBNTcwNTJENDM2Qk
+LeaderId:               2
+HighWatermark:          23208
+MaxFollowerLag:         0</code></pre>
+<p><b>Notice:</b> three brokers listed, <code>isFenced: false</code> (none are shut out), a controller leader exists, <code>MaxFollowerLag: 0</code>. <code>$BS</code> is a ready-made list of all three brokers.</p>
+<label class="check"><input type="checkbox" data-id="lab0"><div>Lab 0 done</div></label>
+</section>
+
+<section class="lab">
+<h2><span class="n">1</span>Create and describe a topic</h2>
+<p class="goal">Goal: create a topic with 3 partitions and 3 copies, and read where everything landed.</p>
+<p><span class="where">in the pod</span></p>
+<pre><code>kafka-topics.sh --bootstrap-server $BS --create --topic training-orders --partitions 3 --replication-factor 3
+kafka-topics.sh --bootstrap-server $BS --list
+kafka-topics.sh --bootstrap-server $BS --describe --topic training-orders</code></pre>
+<pre class="out" data-nocopy><code>Created topic training-orders.
+
+Topic: training-orders  PartitionCount: 3  ReplicationFactor: 3  Configs: min.insync.replicas=2,segment.bytes=104857600
+  Partition: 0  Leader: 0  Replicas: 0,1,2  Isr: 0,1,2
+  Partition: 1  Leader: 1  Replicas: 1,2,0  Isr: 1,2,0
+  Partition: 2  Leader: 2  Replicas: 2,0,1  Isr: 2,0,1</code></pre>
+<p><b>Notice:</b> each partition has a different leader (0, 1, 2): load is spread. <code>Isr</code> equals <code>Replicas</code>: healthy. The <code>Configs</code> were inherited from the broker defaults in the manifest.</p>
+<h3>Two mistakes you will meet</h3>
+<pre><code><span class="c"># Replication factor larger than the broker count</span>
+kafka-topics.sh --bootstrap-server $BS --create --topic rf4 --partitions 1 --replication-factor 4</code></pre>
+<pre class="out" data-nocopy><code>InvalidReplicationFactorException: Unable to replicate the partition 4 time(s): The target replication factor of 4
+cannot be reached because only 3 broker(s) are registered.</code></pre>
+<pre><code><span class="c"># Producing to a topic that does not exist (auto-create is off). Press Ctrl-C after a few seconds.</span>
+echo x | kafka-console-producer.sh --bootstrap-server $BS --topic does-not-exist</code></pre>
+<pre class="out" data-nocopy><code>WARN ... {does-not-exist=UNKNOWN_TOPIC_OR_PARTITION}      <span class="c"># repeats every second...</span>
+TimeoutException: Topic does-not-exist not present in metadata after 60000 ms.</code></pre>
+<p><b>Notice:</b> a typo in a topic name makes a producer <i>hang for 60 seconds</i> then fail. That is the cost of disabling auto-creation, and worth it.</p>
+<label class="check"><input type="checkbox" data-id="lab1"><div>Lab 1 done</div></label>
+</section>
+
+<section class="lab">
+<h2><span class="n">2</span>Produce and consume</h2>
+<p class="goal">Goal: send messages from one terminal and watch them arrive in another.</p>
+<p><span class="where">in the pod</span> Terminal A (consumer, leave it running):</p>
+<pre><code>kafka-console-consumer.sh --bootstrap-server $BS --topic training-orders --from-beginning \
+  --property print.key=true --property print.partition=true --property print.offset=true</code></pre>
+<p>Terminal B (open a second pod shell with <code>k exec -it kafka-client -- bash</code>, then set PATH again):</p>
+<pre><code>kafka-console-producer.sh --bootstrap-server $BS --topic training-orders \
+  --property parse.key=true --property key.separator=: --producer-property acks=all
+<span class="c"># type lines like these, then Ctrl-D:</span>
+cust-A:first order
+cust-B:second order
+cust-A:third order</code></pre>
+<p><b>Notice:</b> the consumer prints each line with <code>Partition:N  Offset:N</code>. Both <code>cust-A</code> lines have the same partition and consecutive offsets. Stop the consumer with <kbd>Ctrl</kbd>+<kbd>C</kbd>.</p>
+<label class="check"><input type="checkbox" data-id="lab2"><div>Lab 2 done</div></label>
+</section>
+
+<section class="lab">
+<h2><span class="n">3</span>Keys decide partitions</h2>
+<p class="goal">Goal: prove that the same key always lands in the same partition, and see that order across partitions is not guaranteed.</p>
+<p><span class="where">in the pod</span> Send 30 records across 6 customers:</p>
+<pre><code>for i in $(seq 1 30); do echo "cust-$(echo ABCDEF | cut -c$(( (i-1)%6+1 ))):order-$i"; done | \
+  kafka-console-producer.sh --bootstrap-server $BS --topic training-orders \
+  --property parse.key=true --property key.separator=: --producer-property acks=all
+
+kafka-get-offsets.sh --bootstrap-server $BS --topic training-orders --time -1</code></pre>
+<pre class="out" data-nocopy><code>training-orders:0:5
+training-orders:1:10
+training-orders:2:15</code></pre>
+<p>(These numbers are from a clean topic receiving exactly these 30 records; if you did Lab 2 first yours are a few higher.) Now read it back and group by partition:</p>
+<pre><code>kafka-console-consumer.sh --bootstrap-server $BS --topic training-orders --from-beginning --timeout-ms 8000 \
+  --property print.key=true --property print.partition=true | grep Partition | sort</code></pre>
+<p><b>Notice:</b> <code>cust-B</code> is always in partition 0, <code>cust-D</code> and <code>cust-E</code> always in partition 1, and so on. The partitions hold 5, 10 and 15 records, so <b>unevenly</b>: with only 6 keys, hashing cannot spread them perfectly. Real systems with thousands of keys balance well. This is a good reason not to use very few keys.</p>
+<label class="check"><input type="checkbox" data-id="lab3"><div>Lab 3 done</div></label>
+</section>
+
+<section class="lab">
+<h2><span class="n">4</span>Consumer groups, lag and replay</h2>
+<p class="goal">Goal: read part of a topic as a named group, inspect lag, finish reading, and rewind.</p>
+<p><span class="where">in the pod</span></p>
+<pre><code><span class="c"># read only 12 records as group "billing"</span>
+kafka-console-consumer.sh --bootstrap-server $BS --topic training-orders --group billing --from-beginning --max-messages 12
+
+kafka-consumer-groups.sh --bootstrap-server $BS --list
+kafka-consumer-groups.sh --bootstrap-server $BS --describe --group billing</code></pre>
+<pre class="out" data-nocopy><code>GROUP    TOPIC            PARTITION  CURRENT-OFFSET  LOG-END-OFFSET  LAG
+billing  training-orders  1          10              10              0
+billing  training-orders  0          2               5               3
+billing  training-orders  2          0               15              15</code></pre>
+<p><b>Notice:</b> the group read all of partition 1, part of 0 and none of 2. <b>Lag = 18</b> records still unread. Now finish and check again:</p>
+<pre><code>kafka-console-consumer.sh --bootstrap-server $BS --topic training-orders --group billing --timeout-ms 6000
+kafka-consumer-groups.sh --bootstrap-server $BS --describe --group billing    <span class="c"># LAG is now 0 everywhere</span>
+
+<span class="c"># preview a rewind (dry-run changes nothing)</span>
+kafka-consumer-groups.sh --bootstrap-server $BS --group billing --topic training-orders --reset-offsets --to-earliest --dry-run</code></pre>
+<pre class="out" data-nocopy><code>GROUP    TOPIC            PARTITION  NEW-OFFSET
+billing  training-orders  1          0
+billing  training-orders  0          0
+billing  training-orders  2          0</code></pre>
+<p>To really rewind (the group must have no running consumers), replace <code>--dry-run</code> with <code>--execute</code>, then run the consumer again: you will see everything replayed.</p>
+<p class="small muted">The <code>TimeoutException</code> printed after a consumer stops on <code>--timeout-ms</code> is normal, not a failure.</p>
+<label class="check"><input type="checkbox" data-id="lab4"><div>Lab 4 done</div></label>
+</section>
+
+<section class="lab">
+<h2><span class="n">5</span>Topic configuration</h2>
+<p class="goal">Goal: change retention for one topic without touching the brokers.</p>
+<p><span class="where">in the pod</span></p>
+<pre><code>kafka-configs.sh --bootstrap-server $BS --entity-type topics --entity-name training-orders --describe
+kafka-configs.sh --bootstrap-server $BS --entity-type topics --entity-name training-orders --alter --add-config retention.ms=86400000
+kafka-configs.sh --bootstrap-server $BS --entity-type topics --entity-name training-orders --describe
+<span class="c"># undo it</span>
+kafka-configs.sh --bootstrap-server $BS --entity-type topics --entity-name training-orders --alter --delete-config retention.ms</code></pre>
+<pre class="out" data-nocopy><code>Dynamic configs for topic training-orders are:            <span class="c"># before: nothing overridden</span>
+Completed updating config for topic training-orders.
+Dynamic configs for topic training-orders are:
+  retention.ms=86400000 sensitive=false synonyms={DYNAMIC_TOPIC_CONFIG:retention.ms=86400000}</code></pre>
+<p><b>Notice:</b> the topic now overrides the broker's 7-day default with 1 day. Changes take effect immediately with no restart. Look at the broker defaults too:</p>
+<pre><code>kafka-configs.sh --bootstrap-server $BS --entity-type brokers --entity-name 0 --describe --all | grep -E "log.retention.hours|min.insync|default.replication"</code></pre>
+<label class="check"><input type="checkbox" data-id="lab5"><div>Lab 5 done</div></label>
+</section>
+
+<section class="lab">
+<h2><span class="n">6</span>Watch retention delete data</h2>
+<p class="goal">Goal: see old records disappear. We shrink retention to 20 seconds and the segment size by time to 10 seconds so it happens in about two minutes.</p>
+<p><span class="where">in the pod</span></p>
+<pre><code>kafka-topics.sh --bootstrap-server $BS --create --topic ret-test --partitions 1 --replication-factor 3 \
+  --config retention.ms=20000 --config segment.ms=10000
+
+for i in 1 2 3 4 5; do echo "msg-$i"; done | kafka-console-producer.sh --bootstrap-server $BS --topic ret-test
+
+kafka-get-offsets.sh --bootstrap-server $BS --topic ret-test --time -2    <span class="c"># earliest</span>
+kafka-get-offsets.sh --bootstrap-server $BS --topic ret-test --time -1    <span class="c"># latest</span>
+<span class="c"># now wait about 90 seconds and run the same two commands again</span></code></pre>
+<pre class="out" data-nocopy><code>before:  earliest ret-test:0:0     latest ret-test:0:5
+after:   earliest ret-test:0:5     latest ret-test:0:5        <span class="c"># all five records deleted</span></code></pre>
+<p><b>Notice:</b> earliest jumped from 0 to 5. The records are gone, but offsets are never reused, so the next record would get offset 5. Optional: on your Mac, <code>k exec kafka-0 -- ls -la /var/lib/kafka/data/ret-test-0</code> shows <code>.deleted</code> files for a minute before they vanish. Clean up: <code>kafka-topics.sh --bootstrap-server $BS --delete --topic ret-test</code></p>
+<label class="check"><input type="checkbox" data-id="lab6"><div>Lab 6 done</div></label>
+</section>
+
+<section class="lab">
+<h2><span class="n">7</span>Measure throughput</h2>
+<p class="goal">Goal: get a feel for how fast this small cluster is, and how <code>acks=all</code> with batching behaves.</p>
+<p><span class="where">in the pod</span></p>
+<pre><code>kafka-topics.sh --bootstrap-server $BS --create --topic perf-test --partitions 3 --replication-factor 3
+
+kafka-producer-perf-test.sh --topic perf-test --num-records 200000 --record-size 200 --throughput -1 \
+  --producer-props bootstrap.servers=$BS acks=all linger.ms=10
+
+kafka-consumer-perf-test.sh --bootstrap-server $BS --topic perf-test --messages 200000 --group perf</code></pre>
+<pre class="out" data-nocopy><code>200000 records sent, 38910.5 records/sec (7.42 MB/sec), 1409.83 ms avg latency, 2806.00 ms max latency ...
+
+data.consumed.in.MB  MB.sec   data.consumed.in.nMsg  nMsg.sec
+38.1470              30.7885  200000                 161420.5</code></pre>
+<p><b>Notice:</b> about 39,000 records per second written with full replication on a tiny lab cluster, and the consumer read at about 160,000 records per second (reading is cheaper than writing: no replication wait). The high average latency is because the test sends as fast as possible and records queue in the producer. Try again with <code>linger.ms=0</code> or <code>acks=1</code> and compare. Clean up: delete <code>perf-test</code>.</p>
+<label class="check"><input type="checkbox" data-id="lab7"><div>Lab 7 done</div></label>
+</section>
+
+<section class="lab">
+<h2><span class="n">8</span>Failure drill 1: kill one broker</h2>
+<p class="goal">Goal: watch Kafka lose a broker and keep working.</p>
+<p><span class="where">in the pod</span> Terminal A: watch the topic, and keep a producer sending in Terminal B if you like.</p>
+<pre><code>watch -n 2 "kafka-topics.sh --bootstrap-server $BS --describe --topic training-orders"</code></pre>
+<p><span class="where mac">on your Mac</span> Terminal C: kill a broker.</p>
+<pre><code>k delete pod kafka-2
+k get pods -w                    <span class="c"># watch it come back (Ctrl-C to stop)</span></code></pre>
+<pre class="out" data-nocopy><code>Partition: 0  Leader: 1  Replicas: 1,2,0  Isr: 1,0      <span class="c"># broker 2 left the ISR</span>
+Partition: 1  Leader: 0  Replicas: 2,0,1  Isr: 0,1      <span class="c"># leadership moved 2 -&gt; 0</span>
+Partition: 2  Leader: 0  Replicas: 0,1,2  Isr: 0,1
+<span class="c">... after the pod restarts and catches up ...</span>
+Partition: 0  Leader: 1  Replicas: 1,2,0  Isr: 1,0,2    <span class="c"># Isr is full again</span></code></pre>
+<p><b>Notice:</b> (1) <code>Isr</code> shrank for a few seconds; (2) leaders moved on their own; (3) producing with <code>acks=all</code> kept working throughout (2 in-sync replicas &ge; min 2); (4) the broker came back with its data and rejoined. Also try: <code>kafka-topics.sh --bootstrap-server $BS --describe --under-replicated-partitions</code> while it is down: it lists exactly the affected partitions.</p>
+<label class="check"><input type="checkbox" data-id="lab8"><div>Lab 8 done</div></label>
+</section>
+
+<section class="lab">
+<h2><span class="n">9</span>Failure drill 2: lose two brokers</h2>
+<p class="goal">Goal: see Kafka refuse writes instead of risking your data, then recover.</p>
+<p><span class="where mac">on your Mac</span></p>
+<pre><code>k scale sts kafka --replicas=1      <span class="c"># only kafka-0 remains: 2 of 3 brokers down</span></code></pre>
+<p><span class="where">in the pod</span> (wait about 25 seconds first)</p>
+<pre><code>echo x | kafka-console-producer.sh --bootstrap-server kafka-0.kafka-headless.kafka.svc.cluster.local:9092 \
+  --topic training-orders --producer-property acks=all</code></pre>
+<pre class="out" data-nocopy><code>WARN Got error produce response ... Error: NOT_ENOUGH_REPLICAS, retrying (2 attempts left)
+WARN ... retrying (1 attempts left)
+WARN ... retrying (0 attempts left)
+ERROR Error when sending message to topic training-orders ...</code></pre>
+<p><span class="where mac">on your Mac</span> restore, then confirm nothing was lost:</p>
+<pre><code>k scale sts kafka --replicas=3
+k rollout status sts/kafka</code></pre>
+<p><b>Notice:</b> only one in-sync replica was left, below <code>min.insync.replicas=2</code>, so the write was <b>refused</b> and the message <code>x</code> was never stored. After scaling back, all earlier data was intact. Re-read <code>training-orders</code> to confirm. <b>Always scale back to 3.</b></p>
+<label class="check"><input type="checkbox" data-id="lab9"><div>Lab 9 done</div></label>
+</section>
+
+<section class="lab">
+<h2><span class="n">10</span>Look at the files on disk</h2>
+<p class="goal">Goal: connect the concepts to real files: segments, indexes, and the records themselves.</p>
+<p><span class="where mac">on your Mac</span></p>
+<pre><code>k exec kafka-0 -- ls -la /var/lib/kafka/data/training-orders-0
+k exec kafka-0 -- /opt/kafka/bin/kafka-dump-log.sh --print-data-log \
+  --files /var/lib/kafka/data/training-orders-0/00000000000000000000.log | head -8
+k exec kafka-0 -- df -h /var/lib/kafka/data</code></pre>
+<pre class="out" data-nocopy><code>-rw-r--r--  10485760  00000000000000000000.index
+-rw-r--r--       164  00000000000000000000.log
+-rw-r--r--  10485756  00000000000000000000.timeindex
+
+baseOffset: 0 lastOffset: 4 count: 5 ... compresscodec: none ...
+| offset: 0 ... key: cust-B payload: order-2
+| offset: 1 ... key: cust-B payload: order-8
+
+/dev/rbd1       4.9G  2.5M  4.9G   1% /var/lib/kafka/data</code></pre>
+<p><b>Notice:</b> partition 0 holds only <code>cust-B</code> records, matching Lab 3. The whole log is 164 bytes. The data volume is a Ceph RBD device (<code>/dev/rbd1</code>) with 4.9 GB free.</p>
+<label class="check"><input type="checkbox" data-id="lab10"><div>Lab 10 done</div></label>
+</section>
+
+<section class="lab">
+<h2><span class="n">11</span>Add partitions (and see why you cannot remove them)</h2>
+<p class="goal">Goal: scale a topic out, and learn the one-way rule.</p>
+<p><span class="where">in the pod</span></p>
+<pre><code>kafka-topics.sh --bootstrap-server $BS --create --topic perf-test --partitions 3 --replication-factor 3
+kafka-topics.sh --bootstrap-server $BS --alter --topic perf-test --partitions 6
+kafka-topics.sh --bootstrap-server $BS --describe --topic perf-test
+kafka-topics.sh --bootstrap-server $BS --alter --topic perf-test --partitions 3</code></pre>
+<pre class="out" data-nocopy><code>PartitionCount: 6  ReplicationFactor: 3          <span class="c"># new partitions 3,4,5 got leaders 0,1,2 automatically</span>
+...
+InvalidPartitionsException: The topic perf-test currently has 6 partition(s); 3 would not be an increase.</code></pre>
+<p><b>Notice:</b> partitions can only increase. And remember module 2: for keyed topics, increasing the count changes where keys land.</p>
+<label class="check"><input type="checkbox" data-id="lab11"><div>Lab 11 done</div></label>
+</section>
+
+<section class="lab">
+<h2><span class="n">12</span>Clean up</h2>
+<p><span class="where">in the pod</span></p>
+<pre><code>for t in training-orders perf-test ret-test keytest; do
+  kafka-topics.sh --bootstrap-server $BS --delete --topic $t 2&gt;/dev/null
+done
+kafka-consumer-groups.sh --bootstrap-server $BS --delete --group billing 2&gt;/dev/null
+kafka-consumer-groups.sh --bootstrap-server $BS --delete --group perf 2&gt;/dev/null
+kafka-topics.sh --bootstrap-server $BS --list           <span class="c"># only __consumer_offsets should remain</span></code></pre>
+<p>Topic deletion frees the disk on all three brokers, usually within a minute.</p>
+<label class="check"><input type="checkbox" data-id="lab12"><div>Lab 12 done</div></label>
+</section>
+
+<div class="callout tip reveal"><strong class="ttl">Stuck?</strong>
+<ul><li><code>command not found</code>: you forgot <code>export PATH=$PATH:/opt/kafka/bin</code> in this shell.</li>
+<li><code>$BS</code> is empty: you are not inside the <code>kafka-client</code> pod.</li>
+<li>Commands hang then time out: check <code>k get pods</code>. If fewer than 2 brokers are Running, you are in a failure state (see module 9).</li>
+<li>A <code>watch</code> screen is stuck on old data: press <kbd>Ctrl</kbd>+<kbd>C</kbd>.</li></ul></div>
+
+</main>
+<script src="../assets/js/app.js"></script>
+<script>
+(function () {
+  function upd() {
+    var all = document.querySelectorAll('.lab .check input'), n = 0; all.forEach(function (i) { if (i.checked) n++; });
+    document.getElementById('labprog').innerHTML = '<b>Lab progress:</b> ' + n + ' of ' + all.length + ' complete' + (n === all.length ? ' &mdash; excellent, you operated a real Kafka cluster.' : '');
+  }
+  document.querySelectorAll('.lab .check input').forEach(function (i) { i.addEventListener('change', upd); });
+  setTimeout(upd, 50);
+})();
+</script>
+</body>
+</html>

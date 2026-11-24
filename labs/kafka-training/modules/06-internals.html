@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>6. Inside the cluster | Kafka Training</title>
+<script src="../assets/js/theme.js"></script>
+<link rel="stylesheet" href="../assets/css/style.css">
+<style>
+  .segrow { display: flex; gap: 10px; align-items: stretch; overflow-x: auto; padding: 4px 2px 10px; min-height: 120px; }
+  .seg1 { flex: none; min-width: 130px; border: 1.5px solid var(--s); background: var(--f); color: var(--t); border-radius: 12px; padding: 8px 10px; font-size: .78rem; transition: opacity .6s, transform .6s, max-width .6s; }
+  .seg1 .fn { font: .72rem var(--mono); margin-bottom: 6px; display: block; } .seg1.active { border-width: 2.5px; box-shadow: 0 0 0 3px color-mix(in srgb, var(--s) 25%, transparent); }
+  .seg1.gone { opacity: 0; transform: scale(.7); } .seg1 .cells { margin-top: 4px; } .seg1 small { display: block; margin-top: 6px; opacity: .85; }
+  .kv { display: flex; gap: 6px; flex-wrap: wrap; } .rec { font: 600 .72rem var(--mono); padding: 5px 8px; border-radius: 8px; border: 1.5px solid var(--s); background: var(--f); color: var(--t); transition: all .5s; }
+  .rec.dead { opacity: .25; text-decoration: line-through; }
+  .qn { display: inline-grid; place-items: center; width: 74px; height: 74px; border-radius: 50%; border: 2.5px solid var(--s); background: var(--f); color: var(--t); font-size: .8rem; cursor: pointer; margin: 6px 10px 6px 0; text-align: center; transition: all .3s; line-height: 1.2; user-select: none; }
+  .qn.dead { background: var(--red-f); border-color: var(--red-s); color: var(--red-t); text-decoration: line-through; opacity: .7; }
+  .qn.ldr { box-shadow: 0 0 0 4px color-mix(in srgb, var(--s) 30%, transparent); }
+  .big2 { font: 700 1.5rem var(--font); color: var(--accent); }
+</style>
+</head>
+<body data-root=".." data-module="6">
+<aside class="side" id="side"></aside>
+<main class="main" id="main">
+
+<div class="kicker">Module 6 of 10 &middot; Under the hood</div>
+<h1>Inside the cluster</h1>
+<p class="lead">How does Kafka actually store data, delete old data, stay fast, and keep track of which broker leads what? This module opens the hood, using real files from your brokers.</p>
+<div class="meta"><span class="pill">25 minutes</span><span class="pill">3 simulators</span><span class="pill">real files from your brokers</span></div>
+<div class="goals"><h4>By the end you can</h4><ul>
+<li>Describe how a partition is stored as segment files on disk</li>
+<li>Explain exactly when retention deletes data, and what compaction does instead</li>
+<li>Explain why Kafka is fast</li>
+<li>Explain KRaft, controllers and the quorum rule</li>
+<li>Estimate how much disk a topic needs</li></ul></div>
+
+<h2 class="reveal">1. A partition is a folder of segment files</h2>
+<p class="reveal">A partition is not one giant file. It is a folder containing <b>segments</b>. Only the newest segment (the <b>active</b> segment) is written; older ones are <b>closed</b> and never change. Each segment is named after the first offset it holds and has three main files:</p>
+<div class="tablewrap reveal"><table>
+<tr><th>File</th><th>Contents</th></tr>
+<tr><td><code>00000000000000000000.log</code></td><td>The actual records, appended in order</td></tr>
+<tr><td><code>00000000000000000000.index</code></td><td>Sparse map: offset &rarr; byte position in the .log (jump close, then scan)</td></tr>
+<tr><td><code>00000000000000000000.timeindex</code></td><td>Map: timestamp &rarr; offset (used by "seek to time")</td></tr>
+</table></div>
+
+<div class="callout real reveal"><strong class="ttl">Real output from your cluster</strong>
+The folder of one partition on broker <code>kafka-0</code> (<code>/var/lib/kafka/data/training-orders-0</code>):
+<pre data-nocopy><code>-rw-r--r--  1 appuser appuser 10485760  00000000000000000000.index
+-rw-r--r--  1 appuser appuser      164  00000000000000000000.log
+-rw-r--r--  1 appuser appuser 10485756  00000000000000000000.timeindex
+-rw-r--r--  1 appuser appuser        8  leader-epoch-checkpoint
+-rw-r--r--  1 appuser appuser       43  partition.metadata</code></pre>
+The .log is only 164 bytes (5 small records). The index files look like 10 MB because Kafka pre-allocates them; they are mostly empty space. Looking inside the log with <code>kafka-dump-log.sh</code>:
+<pre data-nocopy style="margin-bottom:0"><code>baseOffset: 0 lastOffset: 4 count: 5 ... CreateTime: 1795367323932 size: 164 compresscodec: none
+| offset: 0 ... key: cust-B payload: order-2
+| offset: 1 ... key: cust-B payload: order-8
+| offset: 2 ... key: cust-B payload: order-14</code></pre>
+Records are stored in <b>batches</b> (here one batch of 5), exactly as the producer sent them.</div>
+
+<h2 class="reveal">2. Retention: how old data is deleted</h2>
+<p class="reveal">Kafka deletes <b>whole closed segments</b>, never single records. A closed segment is removed when its newest record is older than the retention time, or when the partition exceeds a size limit. The active segment is <b>never</b> deleted, however old. Play with it:</p>
+<div class="sim reveal">
+  <div class="sim-h">Simulator: segments, rolling and time-based retention</div>
+  <div class="sim-b">
+    <div class="sim-ctl">
+      <label>Records per segment (segment.bytes) <input type="range" id="sS" min="2" max="8" value="4"> <span class="val" id="sSv">4</span></label>
+      <span>retention.ms =</span><span class="seg" id="sR"><button data-v="1">1 day</button><button data-v="3" class="on">3 days</button><button data-v="7">7 days</button></span>
+      <label><input type="checkbox" id="sT"> segment.ms = 1 day (roll by time)</label>
+    </div>
+    <div class="sim-ctl">
+      <button class="btn primary" id="sA">Append record</button><button class="btn" id="sA10">Append 10</button>
+      <button class="btn" id="sD1">Advance 1 day</button><button class="btn" id="sD3">Advance 3 days</button><button class="btn" id="sRst">Reset</button>
+      <span class="pill" id="sDay">day 0</span>
+    </div>
+    <div class="segrow c-purple" id="segrow"></div>
+    <div class="grid g3" style="margin:6px 0 0">
+      <div class="card"><div class="muted small">Log start offset (earliest)</div><div class="big2" id="sStart">0</div></div>
+      <div class="card"><div class="muted small">Log end offset (latest)</div><div class="big2" id="sEnd">0</div></div>
+      <div class="card"><div class="muted small">Records still on disk</div><div class="big2" id="sCnt">0</div></div>
+    </div>
+    <div class="simlog" id="slog" style="height:110px"></div>
+  </div>
+</div>
+<div class="callout tip reveal"><strong class="ttl">Experiments</strong><ol>
+<li>Append 10 records (segments roll as they fill). Advance 3 days: the old closed segments disappear, and <b>Log start offset</b> jumps forward. Those offsets are gone forever; offsets are never reused.</li>
+<li>Now append just 1 record, advance 10 days. Nothing is deleted: the <b>active segment</b> is never removed, so old data in a quiet partition lingers.</li>
+<li>Tick <b>segment.ms</b>: a segment is now rolled when it gets a day old, so the old records become eligible too. This is why topics with low traffic need a time-based roll.</li></ol></div>
+<p class="reveal">Your lab sets <code>log.retention.hours=168</code> (7 days), <code>log.segment.bytes=104857600</code> (100 MiB) and checks every 60 seconds. You can override retention per topic (module 9).</p>
+
+<h2 class="reveal">3. Compaction: keep the latest value per key</h2>
+<p class="reveal">Some topics hold <b>state</b>, such as "current address of user 1", where only the newest value per key matters. <code>cleanup.policy=compact</code> keeps the <b>latest record for each key</b> and discards older ones, with no time limit. Offsets stay as they were, so there are gaps.</p>
+<div class="sim reveal">
+  <div class="sim-h">Simulator: log compaction</div>
+  <div class="sim-b">
+    <div class="sim-ctl">
+      <select id="cK"><option>user-1</option><option>user-2</option><option>user-3</option></select>
+      <button class="btn primary" id="cW">Write update for key</button><button class="btn" id="cDel">Delete key (tombstone)</button><button class="btn" id="cRun">Run compaction</button><button class="btn" id="cRst">Reset</button>
+    </div>
+    <div class="muted small" style="margin-bottom:6px">Log (offset: key = value)</div>
+    <div class="kv c-teal" id="cLog"></div>
+    <div class="muted small" style="margin:14px 0 6px">What a reader who rebuilds state sees (latest value per key)</div>
+    <div class="kv c-amber" id="cState"></div>
+  </div>
+</div>
+<p class="reveal small muted">A <b>tombstone</b> is a record with a key and a null value: it means "this key is deleted". Compaction removes older records, and the tombstone itself disappears after a grace period (<code>delete.retention.ms</code>).</p>
+
+<h2 class="reveal">4. Why Kafka is fast</h2>
+<div class="grid g2 reveal">
+<div class="card c-purple"><h4>Sequential disk writes</h4><p>Records are only appended, never updated in place. Sequential writes on disk are close to memory speed and far faster than random writes.</p></div>
+<div class="card c-teal"><h4>The OS page cache</h4><p>Kafka leaves caching to the operating system. Recent data sits in RAM, so most consumers read straight from memory. This is why broker heap is small (512 MB here) and the container memory limit leaves room for cache.</p></div>
+<div class="card c-coral"><h4>Zero-copy transfer</h4><p>To serve a consumer, the kernel sends bytes from page cache straight to the network card without copying through the JVM.</p></div>
+<div class="card c-blue"><h4>Batching and compression</h4><p>Producers send batches; brokers store them as-is; consumers fetch batches. Per-record overhead is spread across many records.</p></div>
+</div>
+<p class="reveal">Finding a record is quick too: the <code>.index</code> file is searched (binary search) for the nearest earlier offset, then Kafka scans a short distance in the .log.</p>
+
+<h2 class="reveal">5. KRaft: who keeps the cluster's brain?</h2>
+<p class="reveal">Brokers need to agree on cluster metadata: which topics exist, who leads each partition, which replicas are in sync. Older Kafka used a separate ZooKeeper cluster for this. Modern Kafka (your 4.0) uses <b>KRaft</b>: a few Kafka nodes called <b>controllers</b> keep a replicated metadata log using the <b>Raft</b> consensus algorithm. No extra system to run.</p>
+<ul class="reveal"><li>One controller is the <b>active leader</b>; the others are hot standbys that hold identical copies.</li><li>Decisions need a <b>majority</b> (quorum): 2 of 3 controllers, or 3 of 5. If a majority is lost, the metadata log freezes.</li><li>The metadata lives in an internal topic <code>__cluster_metadata</code> on each controller (you can see the <code>__cluster_metadata-0</code> folder on your brokers).</li><li>In your lab, all 3 brokers are <b>also</b> controllers ("combined mode"). Large production clusters usually run 3 separate dedicated controllers.</li></ul>
+
+<div class="callout real reveal"><strong class="ttl">Real output from your cluster</strong>
+<pre data-nocopy style="margin-bottom:0"><code><span class="p">$</span> kafka-metadata-quorum.sh --bootstrap-server $BS describe --replication
+NodeId  LogEndOffset  Lag  Status
+2       23215         0    Leader
+0       23215         0    Follower
+1       23215         0    Follower</code></pre>
+Node 2 is the active controller; the others are in sync (lag 0). If node 2 died, 0 or 1 would be elected in about a second.</div>
+
+<div class="sim reveal">
+  <div class="sim-h">Simulator: the quorum rule</div>
+  <div class="sim-b">
+    <div class="sim-ctl"><span>Controllers:</span><span class="seg" id="qN"><button data-v="3" class="on">3</button><button data-v="5">5</button></span><span class="small muted">Click a node to fail or restore it.</span></div>
+    <div class="c-teal" id="qNodes"></div>
+    <div class="status" id="qStat"></div>
+  </div>
+</div>
+
+<h2 class="reveal">6. The group coordinator and __consumer_offsets</h2>
+<p class="reveal">Each consumer group is managed by one broker, its <b>group coordinator</b>, which tracks members and heartbeats and triggers rebalances. Committed offsets are stored in the internal topic <code>__consumer_offsets</code> (50 partitions by default, RF 3, which is why you saw a long list of <code>__consumer_offsets-N</code> folders on disk). A group's coordinator is simply the leader of the <code>__consumer_offsets</code> partition that the group id hashes to. Your lab's <code>billing</code> group was coordinated by <code>kafka-2</code>.</p>
+
+<h2 class="reveal">7. How much disk do I need?</h2>
+<p class="reveal">Disk is usually the first thing that runs out. The estimate is simple: <b>write rate &times; retention time &times; replication factor</b>, plus headroom (aim to stay under 60 to 70 percent full).</p>
+<div class="sim reveal">
+  <div class="sim-h">Calculator: disk sizing</div>
+  <div class="sim-b">
+    <div class="sim-ctl">
+      <label>Incoming data (MB/s) <input type="range" id="dMB" min="0.1" max="200" step="0.1" value="1"> <span class="val" id="dMBv" style="min-width:3.5em">1</span></label>
+      <label>Retention (days) <input type="range" id="dDay" min="1" max="30" value="7"> <span class="val" id="dDv">7</span></label>
+      <label>Replication factor <select id="dRF"><option>1</option><option>2</option><option selected>3</option></select></label>
+      <label>Brokers <select id="dBr"><option>3</option><option>4</option><option>6</option><option>9</option></select></label>
+    </div>
+    <div class="grid g3" style="margin:0">
+      <div class="card"><div class="muted small">Total disk across the cluster</div><div class="big2" id="dTot">-</div></div>
+      <div class="card"><div class="muted small">Per broker (even spread)</div><div class="big2" id="dPer">-</div></div>
+      <div class="card"><div class="muted small">With 35% headroom, per broker</div><div class="big2" id="dHead">-</div></div>
+    </div>
+    <div class="status" id="dLab"></div>
+  </div>
+</div>
+
+<h2 class="reveal">Check yourself</h2>
+<div id="q6"></div>
+
+</main>
+<script src="../assets/js/app.js"></script>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  function pad(n) { return ('0000' + n).slice(-4); }
+
+  /* ---- segments and retention ---- */
+  var segs, day, next, size = 4, ret = 3, byTime = false;
+  function L(m, c) { KT.log($('slog'), m, c); }
+  function sreset() { segs = [{ base: 0, msgs: [], last: 0 }]; day = 0; next = 0; $('slog').innerHTML = ''; srender(); L('Empty partition: one active segment starting at offset 0', 'info'); }
+  function sappend() {
+    var a = segs[segs.length - 1];
+    if (a.msgs.length >= size) { a = { base: next, msgs: [], last: day }; segs.push(a); L('Active segment full: ROLL. New segment starts at offset ' + next, 'info'); }
+    a.msgs.push(next++); a.last = day; srender();
+  }
+  function sdays(n) {
+    for (var i = 0; i < n; i++) {
+      day++;
+      var a = segs[segs.length - 1];
+      if (byTime && a.msgs.length && day - a.last >= 1) { segs.push({ base: next, msgs: [], last: day }); L('Day ' + day + ': active segment is a day old (segment.ms): ROLL', 'info'); }
+      var gone = 0;
+      while (segs.length > 1 && day - segs[0].last >= ret) { L('Retention check: deleting closed segment starting at offset ' + segs[0].base + ' (newest record is ' + (day - segs[0].last) + ' days old)', 'warn'); segs.shift(); gone++; }
+      if (!gone && day - segs[segs.length - 1].last >= ret && segs[segs.length - 1].msgs.length) L('Day ' + day + ': the ACTIVE segment is ' + (day - segs[segs.length - 1].last) + ' days old but is never deleted', 'bad');
+    }
+    srender();
+  }
+  function srender() {
+    var h = '';
+    segs.forEach(function (s, i) {
+      var act = i === segs.length - 1, cells = s.msgs.map(function (o) { return '<div class="cell">' + o + '</div>'; }).join('') || '<span class="muted">empty</span>';
+      h += '<div class="seg1' + (act ? ' active' : '') + '"><span class="fn">...' + pad(s.base) + '.log</span><b>' + (act ? 'ACTIVE (written)' : 'closed') + '</b><div class="cells">' + cells + '</div><small>' + (s.msgs.length ? 'newest: day ' + s.last + ' (' + (day - s.last) + ' d old)' : '') + '</small></div>';
+    });
+    $('segrow').innerHTML = h;
+    var cnt = segs.reduce(function (t, s) { return t + s.msgs.length; }, 0);
+    $('sStart').textContent = cnt ? segs.filter(function (s) { return s.msgs.length; })[0].msgs[0] : next; $('sEnd').textContent = next; $('sCnt').textContent = cnt; $('sDay').textContent = 'day ' + day;
+  }
+  $('sA').onclick = sappend; $('sA10').onclick = function () { for (var i = 0; i < 10; i++) sappend(); };
+  $('sD1').onclick = function () { sdays(1); }; $('sD3').onclick = function () { sdays(3); }; $('sRst').onclick = sreset;
+  $('sS').oninput = function () { size = +this.value; $('sSv').textContent = size; sreset(); };
+  $('sT').onchange = function () { byTime = this.checked; };
+  $('sR').onclick = function (e) { var v = e.target.getAttribute('data-v'); if (!v) return; ret = +v; this.querySelectorAll('button').forEach(function (b) { b.classList.toggle('on', b === e.target); }); };
+  sreset();
+
+  /* ---- compaction ---- */
+  var clog, cn;
+  function crender() {
+    $('cLog').innerHTML = clog.map(function (r) { return '<div class="rec' + (r.dead ? ' dead' : '') + '">' + r.o + ': ' + r.k + ' = ' + (r.v === null ? 'null' : r.v) + '</div>'; }).join('');
+    var st = {}; clog.forEach(function (r) { if (!r.dead) { if (r.v === null) delete st[r.k]; else st[r.k] = r.v; } else if (r.v !== null) { /* older */ } });
+    var full = {}; clog.forEach(function (r) { if (r.v === null) delete full[r.k]; else full[r.k] = r.v; });
+    var keys = Object.keys(full).sort();
+    $('cState').innerHTML = keys.length ? keys.map(function (k) { return '<div class="rec">' + k + ' = ' + full[k] + '</div>'; }).join('') : '<span class="muted">empty</span>';
+  }
+  function creset() { clog = []; cn = 0; var seed = [['user-1', 'v1'], ['user-2', 'v1'], ['user-1', 'v2'], ['user-3', 'v1'], ['user-1', 'v3'], ['user-2', 'v2']]; seed.forEach(function (s) { clog.push({ o: cn++, k: s[0], v: s[1] }); }); crender(); }
+  $('cW').onclick = function () { var k = $('cK').value, c = clog.filter(function (r) { return r.k === k && r.v !== null; }).length + 1; clog.push({ o: cn++, k: k, v: 'v' + c }); crender(); };
+  $('cDel').onclick = function () { clog.push({ o: cn++, k: $('cK').value, v: null }); crender(); };
+  $('cRun').onclick = function () {
+    clog.forEach(function (r, i) { for (var j = i + 1; j < clog.length; j++) if (clog[j].k === r.k) { r.dead = true; break; } });
+    crender();
+    setTimeout(function () { clog = clog.filter(function (r) { return !r.dead && !(r.v === null); }); crender(); }, 900);
+  };
+  $('cRst').onclick = creset; creset();
+
+  /* ---- quorum ---- */
+  var qn = 3, up = [true, true, true, true, true];
+  function qrender() {
+    var h = '', alive = 0, i; for (i = 0; i < qn; i++) if (up[i]) alive++;
+    var need = Math.floor(qn / 2) + 1, ok = alive >= need, ldr = ok ? up.slice(0, qn).indexOf(true) : -1;
+    for (i = 0; i < qn; i++) h += '<div class="qn' + (up[i] ? '' : ' dead') + (i === ldr ? ' ldr' : '') + '" data-i="' + i + '">Controller ' + i + '<br><b>' + (!up[i] ? 'down' : (i === ldr ? 'leader' : 'follower')) + '</b></div>';
+    $('qNodes').innerHTML = h;
+    var s = $('qStat'); s.className = 'status ' + (ok ? (alive < qn ? 'warn' : 'ok') : 'bad');
+    s.innerHTML = '<b>' + alive + ' of ' + qn + ' controllers alive. Majority needed: ' + need + '.</b> ' + (ok ? (alive < qn ? 'Quorum holds: a leader exists, topics can be created, leaders re-elected, configs changed. Tolerates ' + (alive - need) + ' more failure(s).' : 'Healthy.') : 'NO QUORUM. Cluster metadata is frozen: no new topics, no leader elections, no ISR changes. Restore a controller first.');
+  }
+  $('qNodes').onclick = function (e) { var t = e.target.closest('.qn'); if (!t) return; var i = +t.getAttribute('data-i'); up[i] = !up[i]; qrender(); };
+  $('qN').onclick = function (e) { var v = e.target.getAttribute('data-v'); if (!v) return; qn = +v; up = [true, true, true, true, true]; this.querySelectorAll('button').forEach(function (b) { b.classList.toggle('on', b === e.target); }); qrender(); };
+  qrender();
+
+  /* ---- disk calc ---- */
+  function fmt(mb) { return mb >= 1048576 ? (mb / 1048576).toFixed(2) + ' TB' : (mb >= 1024 ? (mb / 1024).toFixed(1) + ' GB' : mb.toFixed(0) + ' MB'); }
+  function dcalc() {
+    var mb = +$('dMB').value, d = +$('dDay').value, rf = +$('dRF').value, br = +$('dBr').value;
+    $('dMBv').textContent = mb; $('dDv').textContent = d;
+    var tot = mb * 86400 * d * rf; $('dTot').textContent = fmt(tot); $('dPer').textContent = fmt(tot / br); $('dHead').textContent = fmt(tot / br / 0.65);
+    var lab = 5 * 1024, hours = lab * 0.65 / ((mb * 3600 * rf) / br);
+    $('dLab').className = 'status' + (hours < 24 ? ' warn' : ' ok'); $('dLab').innerHTML = 'Your lab brokers have <b>5 GiB</b> each. At this rate (and 65% usable) they fill in about <b>' + (hours < 1 ? Math.round(hours * 60) + ' minutes' : hours.toFixed(1) + ' hours') + '</b> unless retention deletes data first. Fine for learning, tiny for real traffic.';
+  }
+  ['dMB', 'dDay'].forEach(function (id) { $(id).oninput = dcalc; }); ['dRF', 'dBr'].forEach(function (id) { $(id).onchange = dcalc; }); dcalc();
+
+  KT.quiz($('q6'), 'm6', 'Quick check', [
+    { q: 'What exactly does retention delete?', o: ['Individual records older than the limit', 'Whole closed segments', 'The oldest partition', 'Records that every consumer has read'], a: 1, why: 'Kafka removes entire closed segment files. Consumption has no effect on deletion.' },
+    { q: 'A quiet partition holds one 10-day-old record in its active segment. Retention is 3 days. Is the record deleted?', o: ['Yes, right away', 'No, the active segment is never deleted (until it rolls)', 'Yes, after 7 days', 'Only if consumers read it'], a: 1, why: 'Only closed segments are eligible. Set segment.ms so a quiet segment rolls and becomes eligible.' },
+    { q: 'What does log compaction keep?', o: ['The newest 7 days', 'The latest record for each key', 'Only the first record per key', 'Records larger than 1 MB'], a: 1, why: 'Compaction preserves the most recent value per key, indefinitely, with offsets unchanged.' },
+    { q: 'A KRaft cluster has 3 controllers. How many can fail while it keeps working?', o: ['0', '1', '2', '3'], a: 1, why: 'A majority (2 of 3) must stay alive. Losing 2 freezes metadata changes.' },
+    { q: 'Rough disk for 2 MB/s, 3 days retention, RF 3 across the cluster?', o: ['about 0.5 TB', 'about 1.5 TB', 'about 5 TB', 'about 50 GB'], a: 1, why: '2 MB/s x 86,400 seconds x 3 days x RF 3 = about 1.56 million MB, which is roughly 1.5 TB across the whole cluster.' }
+  ]);
+})();
+</script>
+</body>
+</html>
